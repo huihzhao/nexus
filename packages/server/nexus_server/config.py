@@ -69,7 +69,7 @@ class ServerConfig:
     # ── Chain / Blockchain ─────────────────────────────────────────
     # Server-owned custodial signing key. Used to sponsor on-chain ops
     # for Web2 users who don't carry their own wallet. NOT the same as
-    # SDK's RUNE_PRIVATE_KEY (which is per-agent / standalone use).
+    # SDK's NEXUS_PRIVATE_KEY (which is per-agent / standalone use).
     SERVER_PRIVATE_KEY: Optional[str] = os.getenv("SERVER_PRIVATE_KEY")
 
     # Legacy / explicit overrides — if the operator wants to point chain
@@ -80,30 +80,30 @@ class ServerConfig:
     )
 
     # Network selection: "bsc-testnet" or "bsc-mainnet". Mirrors SDK's
-    # RUNE_NETWORK.
-    RUNE_NETWORK: str = os.getenv("RUNE_NETWORK", "bsc-testnet")
+    # NEXUS_NETWORK.
+    NEXUS_NETWORK: str = os.getenv("NEXUS_NETWORK", "bsc-testnet")
 
     # Network-level config: shared with SDK via dotenv fallback (see
     # main._load_dotenv). These don't carry secrets.
-    RUNE_TESTNET_RPC: Optional[str] = os.getenv(
-        "RUNE_TESTNET_RPC",
+    NEXUS_TESTNET_RPC: Optional[str] = os.getenv(
+        "NEXUS_TESTNET_RPC",
         "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
     )
-    RUNE_TESTNET_AGENT_STATE_ADDRESS: Optional[str] = os.getenv(
-        "RUNE_TESTNET_AGENT_STATE_ADDRESS"
+    NEXUS_TESTNET_AGENT_STATE_ADDRESS: Optional[str] = os.getenv(
+        "NEXUS_TESTNET_AGENT_STATE_ADDRESS"
     )
-    RUNE_TESTNET_TASK_MANAGER_ADDRESS: Optional[str] = os.getenv(
-        "RUNE_TESTNET_TASK_MANAGER_ADDRESS"
+    NEXUS_TESTNET_TASK_MANAGER_ADDRESS: Optional[str] = os.getenv(
+        "NEXUS_TESTNET_TASK_MANAGER_ADDRESS"
     )
-    RUNE_TESTNET_IDENTITY_REGISTRY: Optional[str] = os.getenv(
-        "RUNE_TESTNET_IDENTITY_REGISTRY"
+    NEXUS_TESTNET_IDENTITY_REGISTRY: Optional[str] = os.getenv(
+        "NEXUS_TESTNET_IDENTITY_REGISTRY"
     )
-    RUNE_MAINNET_RPC: Optional[str] = os.getenv(
-        "RUNE_MAINNET_RPC",
+    NEXUS_MAINNET_RPC: Optional[str] = os.getenv(
+        "NEXUS_MAINNET_RPC",
         "https://bsc-dataseed1.bnbchain.org",
     )
-    RUNE_MAINNET_IDENTITY_REGISTRY: Optional[str] = os.getenv(
-        "RUNE_MAINNET_IDENTITY_REGISTRY"
+    NEXUS_MAINNET_IDENTITY_REGISTRY: Optional[str] = os.getenv(
+        "NEXUS_MAINNET_IDENTITY_REGISTRY"
     )
 
     @property
@@ -114,10 +114,10 @@ class ServerConfig:
         Hoisted here so every module agrees on the mapping. Previously
         each of ``twin_manager``, ``chain_proxy``, and ``sync_anchor``
         rolled its own ``"mainnet" in network`` check — easy to drift,
-        easy to typo. Centralised so a single ``RUNE_NETWORK`` validation
+        easy to typo. Centralised so a single ``NEXUS_NETWORK`` validation
         point covers everyone.
         """
-        return "mainnet" if "mainnet" in (self.RUNE_NETWORK or "").lower() else "testnet"
+        return "mainnet" if "mainnet" in (self.NEXUS_NETWORK or "").lower() else "testnet"
 
     @property
     def chain_active_rpc(self) -> Optional[str]:
@@ -125,9 +125,9 @@ class ServerConfig:
         if self.CHAIN_RPC_URL:
             return self.CHAIN_RPC_URL
         return (
-            self.RUNE_MAINNET_RPC
+            self.NEXUS_MAINNET_RPC
             if self.network_short == "mainnet"
-            else self.RUNE_TESTNET_RPC
+            else self.NEXUS_TESTNET_RPC
         )
 
     @property
@@ -139,14 +139,14 @@ class ServerConfig:
     # When 1, /api/v1/llm/chat is served by a per-user DigitalTwin
     # instead of the direct LLM gateway. Default 1 because the user
     # explicitly committed to Phase D ("we haven't launched, data can
-    # be wiped"). Tests flip this to "0" via RUNE_USE_TWIN env to
+    # be wiped"). Tests flip this to "0" via NEXUS_USE_TWIN env to
     # exercise the legacy path.
-    USE_TWIN: bool = os.getenv("RUNE_USE_TWIN", "1") == "1"
+    USE_TWIN: bool = os.getenv("NEXUS_USE_TWIN", "1") == "1"
     TWIN_BASE_DIR: str = os.getenv(
-        "RUNE_TWIN_BASE_DIR",
+        "NEXUS_TWIN_BASE_DIR",
         os.path.expanduser("~/.nexus_server/twins"),
     )
-    TWIN_IDLE_SECONDS: int = int(os.getenv("RUNE_TWIN_IDLE_SECONDS", "1800"))
+    TWIN_IDLE_SECONDS: int = int(os.getenv("NEXUS_TWIN_IDLE_SECONDS", "1800"))
 
     # Database
     DATABASE_URL: str = os.getenv(
@@ -167,16 +167,16 @@ class ServerConfig:
                 "WEBAUTHN_RP_ID must be set to real domain in production"
             )
 
-        # Validate RUNE_NETWORK loudly — a typo (e.g. "bsc_mainnet" with
+        # Validate NEXUS_NETWORK loudly — a typo (e.g. "bsc_mainnet" with
         # underscore, or "mainet") used to silently fall back to testnet
         # via the ``"mainnet" in network`` substring check. That meant
         # production traffic could end up anchoring to the wrong chain
         # without any warning. We now whitelist the canonical values.
         valid_networks = {"bsc-testnet", "bsc-mainnet"}
-        if self.RUNE_NETWORK not in valid_networks:
+        if self.NEXUS_NETWORK not in valid_networks:
             raise ValueError(
-                f"RUNE_NETWORK must be one of {sorted(valid_networks)}, "
-                f"got {self.RUNE_NETWORK!r}. (Common mistakes: 'bsc_testnet' "
+                f"NEXUS_NETWORK must be one of {sorted(valid_networks)}, "
+                f"got {self.NEXUS_NETWORK!r}. (Common mistakes: 'bsc_testnet' "
                 f"with underscore, or 'mainet' typo — both fail.)"
             )
 

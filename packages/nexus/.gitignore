@@ -1,26 +1,17 @@
-# Environment (contains private keys + API keys!)
+# Package-local .gitignore.
+# The repo-root .gitignore at ../../.gitignore covers the bulk of patterns
+# (.env, .venv, __pycache__, *.db, *.log, .nexus*/, etc.). Keep this file
+# minimal and only add patterns that are genuinely unique to this package.
+
+# Real env (root already covers; duplicated as belt-and-braces).
 .env
 
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-venv/
-.venv/
+# Twin runtime caches when running standalone (root covers .nexus*/, but
+# `.nexus/` bare needs an explicit entry — the root pattern is `.nexus_*/`
+# with trailing underscore; here we cover the bare form too).
+.nexus/
+.nexus_*/
 
-# Runtime data
+# Legacy "rune" runtime caches (pre-Phase G — wipe on sight).
 .rune_twin/
-
-# Test / IDE
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-htmlcov/
-.coverage
-
-# OS
-.DS_Store
-Thumbs.db
+.rune_*/

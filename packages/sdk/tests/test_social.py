@@ -8,8 +8,8 @@ import asyncio
 import time
 import pytest
 
+import nexus_core
 from nexus_core import (
-    Rune,
     Impression,
     ImpressionDimensions,
     ImpressionSummary,
@@ -29,7 +29,7 @@ from nexus_core import (
 
 @pytest.fixture
 def rune():
-    return Rune.builder().mock_backend().build()
+    return nexus_core.builder().mock_backend().build()
 
 
 @pytest.fixture
@@ -706,14 +706,14 @@ class TestSocialGraph:
 
 class TestSocialIntegration:
     def test_rune_has_impressions(self):
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         assert rune.impressions is not None
 
     def test_full_social_workflow(self, backend):
         """
         Full workflow: publish profiles → gossip → form impressions → query graph.
         """
-        rune = Rune.builder().backend(backend).build()
+        rune = nexus_core.builder().backend(backend).build()
 
         # 1. Publish profiles
         pm = ProfileManager(backend, rune.artifacts)

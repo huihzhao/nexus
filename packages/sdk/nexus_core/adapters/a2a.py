@@ -11,7 +11,7 @@ Provides helpers to:
 Architecture: Each agent runs in its own runtime (separate process/server
 in production). The runtime_id is recorded on chain so the network knows
 which runtime is currently executing a given agent. In production each
-runtime exposes an HTTP endpoint; for Phase 1 we use an AgentRuntime
+runtime exposes an HTTP endpoint; for Phase 1 we use an A2ARuntime
 wrapper that simulates this boundary.
 
     ┌─────────────────────┐     ┌─────────────────────┐
@@ -231,20 +231,20 @@ class StatelessA2AAgent:
         return task
 
 
-class AgentRuntime:
+class A2ARuntime:
     """
     Represents a single runtime hosting one agent.
 
-    In production each AgentRuntime is a separate process / container
+    In production each A2ARuntime is a separate process / container
     running an HTTP server that exposes the A2A JSON-RPC endpoint.
     Multiple runtimes connect to the same chain (shared state layer).
 
-    For Phase 1 we simulate this by giving each AgentRuntime its own
+    For Phase 1 we simulate this by giving each A2ARuntime its own
     StateManager (pointing to the same on-disk chain directory) and
     its own runtime_id.
 
     Usage:
-        runtime = AgentRuntime(
+        runtime = A2ARuntime(
             runtime_id="runtime-analyst-01",
             agent_config=A2AAgentConfig(...),
             state_dir="/shared/chain/state",
@@ -276,7 +276,7 @@ class AgentRuntime:
 
     async def send_message_to(
         self,
-        target_runtime: "AgentRuntime",
+        target_runtime: "A2ARuntime",
         message: Message,
         task_id: Optional[str] = None,
         context_id: Optional[str] = None,

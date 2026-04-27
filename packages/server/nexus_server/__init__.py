@@ -1,24 +1,29 @@
-"""Rune Protocol Server - Modular FastAPI application.
+"""Nexus Server — multi-tenant HTTP frontend for the Nexus DigitalTwin.
 
-A comprehensive server serving as:
-- LLM gateway (Gemini, OpenAI, Claude)
-- Authentication provider (JWT + WebAuthn)
-- Event sync hub (client-server data synchronization)
-- Chain proxy (ERC-8004 agent registration)
+A FastAPI application that serves four concerns:
 
-Components:
-    config: Environment-based configuration
-    auth: JWT and WebAuthn authentication
-    llm_gateway: Multi-provider LLM proxy
-    sync_hub: Event synchronization
-    chain_proxy: Blockchain operations
-    database: SQLite helpers
-    middleware: Shared middleware and utilities
-    main: FastAPI app assembly
+* **Auth** — passkey + JWT (``nexus_server.auth``).
+* **Chat** — ``/api/v1/llm/chat`` routes through a per-user
+  :class:`nexus.DigitalTwin`; attachments are distilled via
+  :mod:`nexus_core.distiller` (``nexus_server.llm_gateway`` +
+  ``nexus_server.attachment_distiller``).
+* **Chain** — ERC-8004 identity reads/registration
+  (``nexus_server.chain_proxy``); read-only legacy anchor view
+  (``nexus_server.sync_anchor``).
+* **Views** — ``/api/v1/agent/{state,timeline,memories,messages}``
+  read directly from each twin's per-user EventLog SQLite
+  (``nexus_server.agent_state`` + ``nexus_server.twin_event_log``).
+
+Phase B retired the standalone ``sync_hub`` event-sync router and
+the ``sync_events`` mirror table — the desktop is a thin client now,
+the twin's own EventLog is authoritative. Phase C added the
+``auth/`` / ``chat/`` / ``chain/`` / ``twins/`` / ``views/`` domain
+sub-packages as a navigation aid; the canonical implementations
+still live at the top-level ``nexus_server.*`` modules.
 """
 
 __version__ = "0.1.0"
-__author__ = "Rune Protocol Team"
+__author__ = "Nexus Team"
 __all__ = [
     "__version__",
     "app",

@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from nexus_core import RuneProvider
+from nexus_core import AgentRuntime
 from .memory_evolver import MemoryEvolver
 from .skill_evolver import SkillEvolver
 from .skill_evaluator import SkillEvaluator
@@ -23,7 +23,7 @@ class EvolutionEngine:
 
     def __init__(
         self,
-        rune: RuneProvider,
+        rune: AgentRuntime,
         agent_id: str,
         llm_fn: Any,
         default_persona: str = "",

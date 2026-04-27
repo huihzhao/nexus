@@ -24,7 +24,7 @@ import time
 from collections import Counter
 from typing import Any, Optional
 
-from nexus_core import RuneProvider
+from nexus_core import AgentRuntime
 from .memory_evolver import _robust_json_parse
 
 logger = logging.getLogger(__name__)
@@ -116,7 +116,7 @@ class SkillEvolver:
       2. learn_from_conversation()  — auto-detect skills from chat (LLM-driven)
     """
 
-    def __init__(self, rune: RuneProvider, agent_id: str, llm_fn: Any):
+    def __init__(self, rune: AgentRuntime, agent_id: str, llm_fn: Any):
         self.rune = rune
         self.agent_id = agent_id
         self.llm_fn = llm_fn

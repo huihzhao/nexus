@@ -3,7 +3,7 @@
 Server-side custodial path: when the operator has configured
 ``SERVER_PRIVATE_KEY`` (and the network's RPC + contract addresses are
 reachable via env), this router calls the real ERC-8004 Identity Registry
-on BSC via the SDK's :class:`RuneChainClient`.
+on BSC via the SDK's :class:`BSCClient`.
 
 If chain config is incomplete the router degrades gracefully to mock
 responses (status="pending"), so the rest of the product keeps working
@@ -74,7 +74,7 @@ class ChainAgentInfo(BaseModel):
 _chain_client = None
 _chain_client_lock = threading.Lock()
 # Allow tests to inject a stub. When non-None, _get_chain_client returns this
-# instead of constructing a real RuneChainClient. Reset to None to use real.
+# instead of constructing a real BSCClient. Reset to None to use real.
 _chain_client_test_override = None
 
 
@@ -103,7 +103,7 @@ def _verify_contract_consistency(client, expected_id_registry: str) -> None:
     if actual_cs != expected_cs:
         logger.error(
             "DEPLOYMENT MISMATCH: AgentStateExtension at %s has identityRegistry()=%s "
-            "but env RUNE_TESTNET_IDENTITY_REGISTRY=%s. "
+            "but env NEXUS_TESTNET_IDENTITY_REGISTRY=%s. "
             "Every chain anchor will revert with AgentNotRegistered. "
             "Check packages/sdk/contracts/deployments.json for the right addresses.",
             client.agent_state.address, actual_cs, expected_cs,
@@ -116,7 +116,7 @@ def _verify_contract_consistency(client, expected_id_registry: str) -> None:
 
 
 def _get_chain_client():
-    """Return a singleton RuneChainClient or None if chain is not configured.
+    """Return a singleton BSCClient or None if chain is not configured.
 
     Tests can monkey-patch ``_chain_client_test_override`` with a fake that
     has ``register_agent(name) -> int`` and we'll use that instead.
@@ -136,10 +136,10 @@ def _get_chain_client():
             return _chain_client
 
         try:
-            from nexus_core.chain import RuneChainClient
+            from nexus_core.chain import BSCClient
         except ImportError as e:
             logger.warning(
-                "RuneChainClient unavailable (%s); chain ops disabled.", e
+                "BSCClient unavailable (%s); chain ops disabled.", e
             )
             return None
 
@@ -148,26 +148,26 @@ def _get_chain_client():
         if pk and not pk.startswith("0x"):
             pk = "0x" + pk
 
-        is_mainnet = "mainnet" in config.RUNE_NETWORK
+        is_mainnet = "mainnet" in config.NEXUS_NETWORK
         rpc = config.chain_active_rpc
         identity_addr = (
-            config.RUNE_MAINNET_IDENTITY_REGISTRY
+            config.NEXUS_MAINNET_IDENTITY_REGISTRY
             if is_mainnet
-            else config.RUNE_TESTNET_IDENTITY_REGISTRY
+            else config.NEXUS_TESTNET_IDENTITY_REGISTRY
         )
         agent_state_addr = (
             None
             if is_mainnet
-            else config.RUNE_TESTNET_AGENT_STATE_ADDRESS
+            else config.NEXUS_TESTNET_AGENT_STATE_ADDRESS
         )
         task_manager_addr = (
             None
             if is_mainnet
-            else config.RUNE_TESTNET_TASK_MANAGER_ADDRESS
+            else config.NEXUS_TESTNET_TASK_MANAGER_ADDRESS
         )
 
         try:
-            _chain_client = RuneChainClient(
+            _chain_client = BSCClient(
                 rpc_url=rpc,
                 private_key=pk,
                 identity_registry_address=identity_addr,
@@ -176,14 +176,14 @@ def _get_chain_client():
                 network="bsc_mainnet" if is_mainnet else "bsc_testnet",
             )
             logger.info(
-                "RuneChainClient ready: network=%s, signer=%s",
-                config.RUNE_NETWORK,
+                "BSCClient ready: network=%s, signer=%s",
+                config.NEXUS_NETWORK,
                 getattr(_chain_client, "address", "?"),
             )
             _verify_contract_consistency(_chain_client, identity_addr)
         except Exception as e:
             logger.warning(
-                "Could not initialize RuneChainClient: %s — falling back to mock.",
+                "Could not initialize BSCClient: %s — falling back to mock.",
                 e,
             )
             _chain_client = None
@@ -360,7 +360,7 @@ async def get_chain_agent_info(
             metadata={
                 "on_chain": on_chain,
                 "register_tx": register_tx,
-                "network": config.RUNE_NETWORK,
+                "network": config.NEXUS_NETWORK,
             },
         )
     except HTTPException:

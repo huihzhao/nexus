@@ -42,30 +42,81 @@ Code rename to match doc names:
 Plus pyproject.toml package names, .env / conftest env vars, all
 import strings. Single mechanical sweep + full test pass.
 
-### Phase E — SDK internal grouping
+### Phase E — SDK internal grouping (in progress)
 
-- Submodule reorg of `nexus_core/`: `chain/`, `greenfield/`, `memory/`,
-  `contracts/`, `runtime/`, `llm/`, `tools/`, `distill/`. README per
-  submodule.
-- Drop `nexus/{tools,skills,mcp}/` re-export wrappers — let nexus
-  code import from `nexus_core.*` directly.
+Done:
+- Dropped `nexus/{tools,skills,mcp}/` re-export wrappers. The
+  submodules are tombstones that raise ImportError pointing at
+  ``nexus_core.*``; ``nexus.tools`` survives only to host
+  :class:`ExtendedToolRegistry`, the genuinely Nexus-specific bit.
 
-### Phase F — public class renames
+Still to do (heavier refactor, deferred):
+- Submodule reorg of `nexus_core/`: split monolithic ``chain.py`` /
+  ``greenfield.py`` / ``state.py`` into ``chain/``, ``greenfield/``,
+  ``memory/``, ``contracts/``, ``runtime/``, ``llm/``, ``tools/``,
+  ``distill/``. README per submodule. Holds until the class-rename
+  decisions in Phase F land — splitting + renaming together is
+  cheaper than two passes.
 
-Decide the class API split that's been deferred:
+### Phase F — public class renames + namespace migration
 
-- `Rune` builder → top-level functions (`nexus_core.testnet()`) or
-  `Provider.testnet()`
-- `RuneProvider` → `AgentRuntime` or kept as `Provider`
-- `RuneChainClient` → `BSCClient`
+Done:
+- Logger namespace `rune.*` → `nexus_core.*`. All ``getLogger("rune.X")``
+  call sites were updated.
+- Greenfield bucket prefix `rune-agent-{token_id}` →
+  `nexus-agent-{token_id}`. The legacy shared default
+  ``rune-agent-state`` was also renamed in keystore.py / state.py /
+  cli.py / web_demo.py / scripts; pre-existing testnet buckets
+  abandoned (test phase, no real user data).
 
-Also logger namespace `rune.*` → `nexus_core.*`.
+Class renames are now done in Phase H — see below.
 
-### Bucket prefix migration
+### Phase G — env var + cache + chain-schema rename (done)
 
-`rune-agent-{token_id}` → `nexus-agent-{token_id}`. New buckets created
-under the new prefix. Pre-existing testnet buckets are abandoned (test
-phase, no real user data).
+- Env vars `RUNE_*` → `NEXUS_*`. Migrated everywhere:
+  `NEXUS_NETWORK`, `NEXUS_TESTNET_RPC` / `NEXUS_MAINNET_RPC`,
+  `NEXUS_TESTNET_AGENT_STATE_ADDRESS` /
+  `NEXUS_TESTNET_TASK_MANAGER_ADDRESS` /
+  `NEXUS_TESTNET_IDENTITY_REGISTRY` (and mainnet equivalents),
+  `NEXUS_PRIVATE_KEY`, `NEXUS_GREENFIELD_BUCKET` /
+  `NEXUS_GREENFIELD_KEY` / `NEXUS_GREENFIELD_NETWORK`,
+  `NEXUS_USE_TWIN`, `NEXUS_TWIN_BASE_DIR`,
+  `NEXUS_TWIN_IDLE_SECONDS`, `NEXUS_DISABLE_TWIN_REAPER`,
+  `NEXUS_CACHE_DIR`, `NEXUS_MAX_ATTACHMENT_BYTES`,
+  `NEXUS_MAX_INLINE_TEXT_BYTES`. Test fixtures
+  ``TEST_RUNE_*`` → ``TEST_NEXUS_*``. Twin manager's dynamic
+  ``getattr(config, f"RUNE_{net_prefix}_…")`` lookups also updated.
+- Cache directory ``.rune_twin_demo`` → ``.nexus_demo``. Pre-existing
+  local caches abandoned per user instruction.
+- Chain anchor schema id ``"rune.sync.batch.v1"`` →
+  ``"nexus.sync.batch.v1"``. Pre-existing testnet anchors
+  abandoned per user instruction (we can re-anchor from scratch).
+
+### Phase H — public class renames (done)
+
+The static-factory class ``Rune`` was retired in favour of
+module-level functions. The 80% surface is now::
+
+    import nexus_core
+    rt = nexus_core.local()                       # was Rune.local()
+    rt = nexus_core.testnet(private_key="0x...")  # was Rune.testnet(...)
+    rt = nexus_core.mainnet(private_key="0x...")  # was Rune.mainnet(...)
+    rt = nexus_core.builder().mock_backend().build()
+
+Class rename map:
+
+| Was | Is now |
+| --- | --- |
+| ``Rune`` (static-factory class) | dropped — use top-level functions |
+| ``RuneBuilder`` | ``Builder`` |
+| ``RuneProvider`` (the 5-provider facade) | ``AgentRuntime`` |
+| ``RuneSessionProvider`` / ``RuneMemoryProvider`` / ``RuneArtifactProvider`` / ``RuneTaskProvider`` / ``RuneImpressionProvider`` | drop ``Rune`` prefix — ``SessionProvider`` etc. |
+| ``RuneChainClient`` (BSC web3 wrapper) | ``BSCClient`` |
+| ``RuneKeystore`` | ``Keystore`` |
+| A2A's ``AgentRuntime`` (separate concept — A2A process container) | ``A2ARuntime`` (matches existing ``A2AAgentConfig`` convention; resolves the naming clash with the new SDK ``AgentRuntime``) |
+
+Pre-existing class names had no production users, so the rename
+is a clean break — no compatibility aliases.
 
 ## Later
 

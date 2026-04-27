@@ -34,7 +34,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Optional
 
-logger = logging.getLogger("rune.flush")
+logger = logging.getLogger("nexus_core.flush")
 
 
 @dataclass

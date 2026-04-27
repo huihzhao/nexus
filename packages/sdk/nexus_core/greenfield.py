@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
-logger = logging.getLogger("rune.greenfield")
+logger = logging.getLogger("nexus_core.greenfield")
 
 # ── Network Presets ──────────────────────────────────────────────────
 
@@ -62,12 +62,12 @@ class GreenfieldClient:
         # Real Greenfield (Phase 2)
         client = GreenfieldClient(
             private_key="0x...",
-            bucket_name="rune-agent-state",
+            bucket_name="nexus-agent-state",
             network="testnet",
         )
 
         # Local fallback (Phase 1)
-        client = GreenfieldClient(local_dir=".rune_state/data")
+        client = GreenfieldClient(local_dir=".nexus_state/data")
 
     Content-hash addressing:
         hash = await client.put(data)    # SHA-256 of data → hex string
@@ -146,7 +146,7 @@ class GreenfieldClient:
                 )
             except ImportError:
                 # web3/eth_account not installed
-                fallback_dir = Path(".rune_state") / "data"
+                fallback_dir = Path(".nexus_state") / "data"
                 fallback_dir.mkdir(parents=True, exist_ok=True)
                 self._mode = "local"
                 self._local_dir = fallback_dir
@@ -422,9 +422,9 @@ class GreenfieldClient:
 
         env = os.environ.copy()
         if self._private_key:
-            env["RUNE_PRIVATE_KEY"] = self._private_key
-        env["RUNE_GREENFIELD_BUCKET"] = self._bucket_name
-        env["RUNE_GREENFIELD_NETWORK"] = self._network
+            env["NEXUS_PRIVATE_KEY"] = self._private_key
+        env["NEXUS_GREENFIELD_BUCKET"] = self._bucket_name
+        env["NEXUS_GREENFIELD_NETWORK"] = self._network
 
         logger.info("Creating bucket '%s' via JS SDK...", self._bucket_name)
         try:
@@ -608,9 +608,9 @@ class GreenfieldClient:
 
         env = os.environ.copy()
         if self._private_key:
-            env["RUNE_PRIVATE_KEY"] = self._private_key
-        env["RUNE_GREENFIELD_BUCKET"] = self._bucket_name
-        env["RUNE_GREENFIELD_NETWORK"] = self._network
+            env["NEXUS_PRIVATE_KEY"] = self._private_key
+        env["NEXUS_GREENFIELD_BUCKET"] = self._bucket_name
+        env["NEXUS_GREENFIELD_NETWORK"] = self._network
 
         logger.info("Starting Greenfield daemon: %s", script)
         GreenfieldClient._daemon_proc = subprocess.Popen(
@@ -725,9 +725,9 @@ class GreenfieldClient:
 
         env = os.environ.copy()
         if self._private_key:
-            env["RUNE_PRIVATE_KEY"] = self._private_key
-        env["RUNE_GREENFIELD_BUCKET"] = self._bucket_name
-        env["RUNE_GREENFIELD_NETWORK"] = self._network
+            env["NEXUS_PRIVATE_KEY"] = self._private_key
+        env["NEXUS_GREENFIELD_BUCKET"] = self._bucket_name
+        env["NEXUS_GREENFIELD_NETWORK"] = self._network
 
         cmd = ["node", script, op, object_name]
         if hex_data:
@@ -872,7 +872,7 @@ class GreenfieldClient:
     def _ensure_local_fallback(self):
         """Set up local fallback directory if not already present."""
         if not hasattr(self, "_local_dir") or self._local_dir is None:
-            self._local_dir = Path(".rune_state") / "data"
+            self._local_dir = Path(".nexus_state") / "data"
             self._local_dir.mkdir(parents=True, exist_ok=True)
 
     # ── List / browse ─────────────────────────────────────────────────

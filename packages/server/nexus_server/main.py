@@ -1,7 +1,9 @@
 """FastAPI application assembly and entry point.
 
 Creates and configures the main FastAPI application with:
-  - All routers (auth, llm_gateway, sync_hub, chain_proxy, user_profile)
+  - Routers (auth, llm_gateway, chain_proxy, agent_state, files,
+    user_profile, passkey_page) — note ``sync_hub`` was retired in
+    Phase B when the desktop became a thin client.
   - CORS middleware
   - Exception handlers
   - Health check endpoint
@@ -20,13 +22,13 @@ from pathlib import Path
 # Lookup order (first to set a key wins; later files only fill blanks):
 #   1. cwd .env                — operator/CI override
 #   2. packages/server/.env    — server-specific (SERVER_PRIVATE_KEY, JWT, …)
-#   3. packages/sdk/.env       — network-level fallback (RUNE_TESTNET_RPC,
+#   3. packages/sdk/.env       — network-level fallback (NEXUS_TESTNET_RPC,
 #                                contract addresses) so chain_proxy can find
 #                                network config without duplicating it.
 #
 # Custodial signing key (SERVER_PRIVATE_KEY) is server-only and never read
 # from sdk/.env; sdk/.env is only used here as a network/contract config
-# source. SDK's RUNE_PRIVATE_KEY may also be present — we let it through
+# source. SDK's NEXUS_PRIVATE_KEY may also be present — we let it through
 # into os.environ because SDK code may consult it, but chain_proxy treats
 # it as ignored.
 def _load_dotenv():
@@ -50,7 +52,7 @@ def _load_dotenv():
                 os.environ[key] = val
         # Note: we keep walking — earlier files take precedence via the
         # `key not in os.environ` guard, while later files fill in any
-        # leftover blanks (e.g. sdk/.env supplies RUNE_TESTNET_RPC).
+        # leftover blanks (e.g. sdk/.env supplies NEXUS_TESTNET_RPC).
 
 _load_dotenv()
 
@@ -75,9 +77,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from nexus_server import (
-    agent_state, auth, chain_proxy, llm_gateway, passkey_page,
+    agent_state, auth, chain_proxy, llm_gateway,
     user_profile,
 )
+# Phase C: passkey_page moved into the ``auth`` domain package.
+from nexus_server.auth import passkey_page
 # Phase B: ``sync_hub`` is gone (raises ImportError). /sync/push and
 # /sync/pull retired after Round 2 made the desktop a thin client.
 from nexus_server.config import get_config
@@ -136,7 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # cost of nexus.
     twin_reaper_task = None
     twin_stop_event = None
-    if config.USE_TWIN and _os.environ.get("RUNE_DISABLE_TWIN_REAPER") != "1":
+    if config.USE_TWIN and _os.environ.get("NEXUS_DISABLE_TWIN_REAPER") != "1":
         try:
             from nexus_server import twin_manager
             twin_reaper_task, twin_stop_event = twin_manager.start_reaper()

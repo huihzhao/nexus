@@ -13,7 +13,8 @@ import pytest
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from nexus_core import Rune, MockBackend
+import nexus_core
+from nexus_core import MockBackend
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────
@@ -25,12 +26,12 @@ def backend():
 
 @pytest.fixture
 def rune():
-    return Rune.builder().mock_backend().build()
+    return nexus_core.builder().mock_backend().build()
 
 
 @pytest.fixture
 def rune_provider(rune):
-    """Return a RuneProvider (the public API object)."""
+    """Return a AgentRuntime (the public API object)."""
     return rune
 
 
@@ -956,14 +957,14 @@ class TestFeature_MemoryCapacityManagement:
     def test_has_max_memories_config(self):
         """MemoryEvolver should have configurable max_memories."""
         from nexus.evolution.memory_evolver import MemoryEvolver
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=AsyncMock(), max_memories=100)
         assert evolver.max_memories == 100
 
     def test_default_max_memories(self):
         """Default max_memories should be 500."""
         from nexus.evolution.memory_evolver import MemoryEvolver
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=AsyncMock())
         assert evolver.max_memories == 500
 
@@ -976,7 +977,7 @@ class TestFeature_MemoryCapacityManagement:
     async def test_check_and_consolidate_below_threshold(self):
         """Should not consolidate when below trigger threshold."""
         from nexus.evolution.memory_evolver import MemoryEvolver
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=AsyncMock(), max_memories=100)
 
         # Add a few memories (well below 90% of 100)
@@ -997,7 +998,7 @@ class TestFeature_MemoryCapacityManagement:
                 {"content": "Consolidated memory 2", "category": "fact", "importance": 3},
             ])
 
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=mock_llm, max_memories=10)
 
         # Add 10 memories (100% of 10 capacity, above 90% trigger)
@@ -1023,7 +1024,7 @@ class TestFeature_MemoryCapacityManagement:
                 {"content": "Merged summary", "category": "consolidated", "importance": 3},
             ])
 
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=mock_llm, max_memories=10)
 
         # Add memories, then search some to boost their access_count
@@ -1047,7 +1048,7 @@ class TestFeature_MemoryCapacityManagement:
                 {"content": "Forced consolidation result", "category": "fact", "importance": 3},
             ])
 
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=mock_llm, max_memories=1000)
 
         # Add a few memories (well below capacity)
@@ -1065,7 +1066,7 @@ class TestFeature_MemoryCapacityManagement:
         async def failing_llm(prompt):
             raise RuntimeError("LLM unavailable")
 
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=failing_llm, max_memories=10)
 
         for i in range(10):
@@ -1083,7 +1084,7 @@ class TestFeature_MemoryCapacityManagement:
     async def test_stats_include_capacity(self):
         """get_stats() should include capacity information."""
         from nexus.evolution.memory_evolver import MemoryEvolver
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=AsyncMock(), max_memories=200)
 
         for i in range(5):
@@ -1521,14 +1522,14 @@ class TestFeature_ToolRegistry:
     """ToolRegistry should manage tool registration and routing."""
 
     def test_registry_starts_empty(self):
-        from nexus.tools.base import ToolRegistry
+        from nexus_core.tools import ToolRegistry
         registry = ToolRegistry()
         assert len(registry) == 0
         assert not registry
         assert registry.tool_names == []
 
     def test_register_tool(self):
-        from nexus.tools.base import ToolRegistry, BaseTool, ToolResult
+        from nexus_core.tools import ToolRegistry, BaseTool, ToolResult
 
         class DummyTool(BaseTool):
             @property
@@ -1546,7 +1547,7 @@ class TestFeature_ToolRegistry:
         assert registry.get("dummy") is not None
 
     def test_unregister_tool(self):
-        from nexus.tools.base import ToolRegistry, BaseTool, ToolResult
+        from nexus_core.tools import ToolRegistry, BaseTool, ToolResult
 
         class DummyTool(BaseTool):
             @property
@@ -1563,7 +1564,7 @@ class TestFeature_ToolRegistry:
         assert len(registry) == 0
 
     def test_get_definitions(self):
-        from nexus.tools.base import ToolRegistry, BaseTool, ToolResult
+        from nexus_core.tools import ToolRegistry, BaseTool, ToolResult
 
         class DummyTool(BaseTool):
             @property
@@ -1588,7 +1589,7 @@ class TestFeature_ToolRegistry:
 
     @pytest.mark.asyncio
     async def test_execute_known_tool(self):
-        from nexus.tools.base import ToolRegistry, BaseTool, ToolResult, ToolCall
+        from nexus_core.tools import ToolRegistry, BaseTool, ToolResult, ToolCall
 
         class EchoTool(BaseTool):
             @property
@@ -1607,7 +1608,7 @@ class TestFeature_ToolRegistry:
 
     @pytest.mark.asyncio
     async def test_execute_unknown_tool(self):
-        from nexus.tools.base import ToolRegistry, ToolCall
+        from nexus_core.tools import ToolRegistry, ToolCall
 
         registry = ToolRegistry()
         result = await registry.execute(ToolCall(id="1", name="nonexistent", arguments={}))
@@ -1616,7 +1617,7 @@ class TestFeature_ToolRegistry:
 
     @pytest.mark.asyncio
     async def test_execute_tool_error(self):
-        from nexus.tools.base import ToolRegistry, BaseTool, ToolResult, ToolCall
+        from nexus_core.tools import ToolRegistry, BaseTool, ToolResult, ToolCall
 
         class FailTool(BaseTool):
             @property
@@ -1638,12 +1639,12 @@ class TestFeature_ToolResult:
     """ToolResult formatting for LLM injection."""
 
     def test_success_to_str(self):
-        from nexus.tools.base import ToolResult
+        from nexus_core.tools import ToolResult
         r = ToolResult(success=True, output="Search results here")
         assert r.to_str() == "Search results here"
 
     def test_error_to_str(self):
-        from nexus.tools.base import ToolResult
+        from nexus_core.tools import ToolResult
         r = ToolResult(success=False, error="API key missing")
         assert "[Tool Error]" in r.to_str()
         assert "API key missing" in r.to_str()
@@ -1653,7 +1654,7 @@ class TestFeature_WebSearchTool:
     """WebSearchTool definition and structure."""
 
     def test_tool_definition(self):
-        from nexus.tools.web_search import WebSearchTool
+        from nexus_core.tools.web_search import WebSearchTool
         tool = WebSearchTool(api_key="fake")
         assert tool.name == "web_search"
         assert "search" in tool.description.lower()
@@ -1661,7 +1662,7 @@ class TestFeature_WebSearchTool:
         assert "query" in tool.parameters["properties"]
 
     def test_definition_format(self):
-        from nexus.tools.web_search import WebSearchTool
+        from nexus_core.tools.web_search import WebSearchTool
         tool = WebSearchTool()
         defn = tool.to_definition()
         assert defn["name"] == "web_search"
@@ -1671,7 +1672,7 @@ class TestFeature_WebSearchTool:
     @pytest.mark.asyncio
     async def test_ddg_parse_empty(self):
         """DuckDuckGo parser should handle empty HTML gracefully."""
-        from nexus.tools.web_search import WebSearchTool
+        from nexus_core.tools.web_search import WebSearchTool
         results = WebSearchTool._parse_ddg_lite("", 5)
         assert results == []
 
@@ -1680,7 +1681,7 @@ class TestFeature_URLReaderTool:
     """URLReaderTool definition and HTML extraction."""
 
     def test_tool_definition(self):
-        from nexus.tools.url_reader import URLReaderTool
+        from nexus_core.tools.url_reader import URLReaderTool
         tool = URLReaderTool()
         assert tool.name == "read_url"
         assert "url" in tool.parameters["properties"]
@@ -1688,7 +1689,7 @@ class TestFeature_URLReaderTool:
 
     def test_html_to_text_basic(self):
         """Should extract readable text from HTML."""
-        from nexus.tools.url_reader import URLReaderTool
+        from nexus_core.tools.url_reader import URLReaderTool
         html = "<html><body><h1>Title</h1><p>Hello world</p></body></html>"
         text = URLReaderTool._html_to_text(html)
         assert "Title" in text
@@ -1697,7 +1698,7 @@ class TestFeature_URLReaderTool:
 
     def test_html_to_text_strips_scripts(self):
         """Should remove script and style blocks."""
-        from nexus.tools.url_reader import URLReaderTool
+        from nexus_core.tools.url_reader import URLReaderTool
         html = """
         <html><body>
         <script>var x = 1;</script>
@@ -1712,7 +1713,7 @@ class TestFeature_URLReaderTool:
 
     def test_html_to_text_strips_nav_footer(self):
         """Should remove nav, header, and footer elements."""
-        from nexus.tools.url_reader import URLReaderTool
+        from nexus_core.tools.url_reader import URLReaderTool
         html = """
         <html><body>
         <nav>Menu items</nav>
@@ -1729,7 +1730,7 @@ class TestFeature_URLReaderTool:
 
     def test_html_entities_decoded(self):
         """Should decode common HTML entities."""
-        from nexus.tools.url_reader import URLReaderTool
+        from nexus_core.tools.url_reader import URLReaderTool
         html = "<p>Tom &amp; Jerry &lt;3 &quot;cartoons&quot;</p>"
         text = URLReaderTool._html_to_text(html)
         assert "Tom & Jerry" in text
@@ -1808,7 +1809,7 @@ class TestBug_MemoryAccessCountPersistence:
     @pytest.mark.asyncio
     async def test_search_marks_entries_dirty(self):
         """search() should mark entries dirty for deferred flush (not persist immediately)."""
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         mid = await rune.memory.add("Python tips", "agent-1")
 
         # Search to increment access count
@@ -1837,7 +1838,7 @@ class TestBug_MemoryAccessCountPersistence:
     @pytest.mark.asyncio
     async def test_flush_persists_only_dirty_entries(self):
         """flush() should persist only dirty entries, not all entries."""
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         await rune.memory.add("Fact one", "agent-1")
         await rune.memory.add("Fact two", "agent-1")
         await rune.memory.add("Fact three", "agent-1")
@@ -1883,7 +1884,7 @@ class TestBug_ConsolidationSafety:
             # Returns valid JSON array but with items missing 'content'
             return json.dumps([{"type": "error"}, {"note": "bad"}])
 
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=bad_llm, max_memories=10)
 
         for i in range(10):
@@ -1905,7 +1906,7 @@ class TestBug_ConsolidationSafety:
         async def failing_llm(prompt):
             raise RuntimeError("LLM unavailable")
 
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=failing_llm, max_memories=10)
 
         for i in range(10):
@@ -1930,7 +1931,7 @@ class TestBug_ConsolidationSafety:
                 {"content": "Summary B", "category": "fact", "importance": 3},
             ])
 
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         evolver = MemoryEvolver(rune, "agent-1", llm_fn=good_llm, max_memories=10)
 
         for i in range(10):
@@ -2096,7 +2097,7 @@ class TestBug_FlushDirtyTracking:
     @pytest.mark.asyncio
     async def test_flush_skips_clean_entries(self):
         """If no entries are dirty, flush should write nothing."""
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         await rune.memory.add("Clean entry", "agent-1")
 
         # No search → nothing dirty
@@ -2108,7 +2109,7 @@ class TestBug_FlushDirtyTracking:
     @pytest.mark.asyncio
     async def test_search_marks_dirty(self):
         """search() should add accessed entries to _dirty_entries."""
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         mid = await rune.memory.add("Python tips", "agent-1")
 
         await rune.memory.search("Python", "agent-1")
@@ -2119,7 +2120,7 @@ class TestBug_FlushDirtyTracking:
     @pytest.mark.asyncio
     async def test_flush_clears_dirty_set(self):
         """After flush(), dirty set should be empty."""
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         await rune.memory.add("Python tips", "agent-1")
         await rune.memory.search("Python", "agent-1")
 

@@ -15,7 +15,7 @@ Usage:
     # Quick local test (no wallet, no chain, zero setup)
     python demo/02_add_persistence.py --mode local
 
-    # BSC testnet (requires .env with RUNE_PRIVATE_KEY)
+    # BSC testnet (requires .env with NEXUS_PRIVATE_KEY)
     python demo/02_add_persistence.py --mode testnet
 """
 
@@ -35,7 +35,7 @@ from google.adk.events import Event, EventActions
 # Before (Step 1):
 #     from google.adk.sessions import InMemorySessionService
 # After (Step 2):
-from nexus_core import Rune
+import nexus_core
 from nexus_core.adapters.adk import RuneSessionService
 from nexus_core.cli_utils import load_dotenv
 # ────────────────────────────────────────────────────────────────────
@@ -108,16 +108,16 @@ def create_rune(args):
     """Create a Rune provider based on CLI mode."""
     if args.mode == "testnet":
         load_dotenv()
-        private_key = os.environ.get("RUNE_PRIVATE_KEY")
+        private_key = os.environ.get("NEXUS_PRIVATE_KEY")
         if not private_key:
-            print("  ERROR: RUNE_PRIVATE_KEY required for testnet mode")
+            print("  ERROR: NEXUS_PRIVATE_KEY required for testnet mode")
             sys.exit(1)
-        return Rune.testnet(private_key=private_key)
+        return nexus_core.testnet(private_key=private_key)
     else:
         state_dir = getattr(args, 'state_dir', '/tmp/rune_demo_02')
         if os.path.exists(state_dir):
             shutil.rmtree(state_dir)
-        return Rune.local(base_dir=state_dir)
+        return nexus_core.local(base_dir=state_dir)
 
 
 async def main():
@@ -195,7 +195,7 @@ async def main():
   |  + from nexus_core.adapters.adk import RuneSessionSvc|
   |                                                          |
   |  - session_svc = InMemorySessionService()                |
-  |  + rune = Rune.local()                                   |
+  |  + rune = nexus_core.local()                                   |
   |  + session_svc = RuneSessionService(rune.sessions)       |
   |                                                          |
   |  Agent logic: ZERO changes.                              |

@@ -1,30 +1,36 @@
 """
-Rune Protocol — Builder + Static Factories.
+nexus_core — top-level entry points + Builder.
 
-This is the main entry point for users. Provides:
+The 80% case is the four module-level factory functions:
 
-  - Quick factories:  Rune.local(), Rune.testnet(), Rune.mainnet()
-  - Builder pattern:  Rune.builder().backend(...).flush_policy(...).build()
+    import nexus_core
 
-Design patterns:
-  - Builder:          RuneBuilder for complex configuration
-  - Static Factory:   Rune.local() / Rune.testnet() for 80% use case
-  - Facade:           Returns RuneProvider (clean 4-provider surface)
+    rt = nexus_core.local()                          # Zero config, file-backed
+    rt = nexus_core.testnet(private_key="0x...")     # BSC testnet + Greenfield
+    rt = nexus_core.mainnet(private_key="0x...")     # BSC mainnet + Greenfield
+    rt = nexus_core.builder().mock_backend().build() # Unit tests / custom config
 
-Usage:
-    # Zero config (most common)
-    rune = Rune.local()
+Each returns an :class:`AgentRuntime` — the 5-provider facade
+(``sessions``, ``memory``, ``artifacts``, ``tasks``, ``impressions``)
+backed by a single :class:`StorageBackend`. The ``backend`` is
+exposed on the runtime for low-level callers.
 
-    # Testnet
-    rune = Rune.testnet(private_key="0x...")
+For complex configuration, :func:`builder` returns a fluent
+:class:`Builder`:
 
-    # Custom config
-    rune = (
-        Rune.builder()
-        .backend(LocalBackend(base_dir="/tmp/my-agent"))
-        .flush_policy(FlushPolicy.sync_every())
+    rt = (
+        nexus_core.builder()
+        .backend(my_custom_backend)
+        .flush_policy(FlushPolicy.aggressive())
+        .runtime_id("prod-runtime-1")
         .build()
     )
+
+Phase H note — the previous public surface used a static-factory
+class ``Rune`` (``Rune.local()`` / ``Rune.testnet()`` /
+``Rune.builder()``). That class is gone; call the module-level
+functions directly. ``RuneBuilder`` was renamed to :class:`Builder`,
+and the returned facade ``RuneProvider`` to :class:`AgentRuntime`.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ from typing import Optional
 
 from .core.backend import StorageBackend
 from .core.flush import FlushPolicy
-from .core.providers import RuneProvider
+from .core.providers import AgentRuntime
 from .providers.session import SessionProviderImpl
 from .providers.memory import MemoryProviderImpl
 from .providers.artifact import ArtifactProviderImpl
@@ -41,89 +47,82 @@ from .providers.task import TaskProviderImpl
 from .providers.impression import ImpressionProviderImpl
 
 
-class Rune:
+# ── Module-level factory functions (the 80% surface) ──────────────────
+
+
+def local(base_dir: str = ".nexus_state") -> AgentRuntime:
+    """Create a local-mode runtime. Zero config, no blockchain.
+
+    Perfect for development, testing, and demos. All data stored
+    as files under ``base_dir``.
+
+    Args:
+        base_dir: Directory for local storage (default: ``.nexus_state``).
+
+    Returns:
+        An :class:`AgentRuntime` backed by :class:`LocalBackend`.
     """
-    Main entry point — static factories + builder access.
+    return builder().local_backend(base_dir).build()
 
-    Not instantiated directly. Use the static methods:
 
-        rune = Rune.local()
-        rune = Rune.testnet(private_key="0x...")
-        rune = Rune.builder().backend(...).build()
+def testnet(private_key: str, **kwargs) -> AgentRuntime:
+    """Create a testnet-mode runtime — BSC testnet + Greenfield testnet.
+
+    Requires:
+      - BNB testnet tokens (from a faucet).
+      - Deployed contracts (AgentStateExtension + TaskStateManager).
+
+    Args:
+        private_key: BSC wallet private key (0x-prefixed hex).
+        **kwargs: Additional :class:`ChainBackend` options
+            (``rpc_url``, ``agent_state_address``,
+            ``task_manager_address``, ``identity_registry_address``,
+            ``greenfield_bucket``).
+
+    Returns:
+        An :class:`AgentRuntime` backed by :class:`ChainBackend`.
     """
-
-    # ── Quick Factories (cover 80% of use cases) ────────────────────
-
-    @staticmethod
-    def local(base_dir: str = ".rune_state") -> RuneProvider:
-        """
-        Create a local-mode provider. Zero config, no blockchain.
-
-        Perfect for development, testing, and demos.
-        All data stored as files in base_dir.
-
-        Args:
-            base_dir: Directory for local storage (default: .rune_state)
-
-        Returns:
-            RuneProvider with all four providers backed by local files.
-        """
-        return Rune.builder().local_backend(base_dir).build()
-
-    @staticmethod
-    def testnet(private_key: str, **kwargs) -> RuneProvider:
-        """
-        Create a testnet-mode provider. BSC testnet + Greenfield testnet.
-
-        Requires:
-          - BNB testnet tokens (from faucet)
-          - Deployed contracts (AgentStateExtension + TaskStateManager)
-
-        Args:
-            private_key: BSC wallet private key (0x-prefixed hex).
-            **kwargs: Additional ChainBackend options.
-
-        Returns:
-            RuneProvider backed by BSC testnet + Greenfield.
-        """
-        return Rune.builder().chain_backend(private_key, network="testnet", **kwargs).build()
-
-    @staticmethod
-    def mainnet(private_key: str, **kwargs) -> RuneProvider:
-        """
-        Create a mainnet-mode provider. BSC mainnet + Greenfield mainnet.
-
-        Args:
-            private_key: BSC wallet private key.
-            **kwargs: Additional ChainBackend options.
-
-        Returns:
-            RuneProvider backed by BSC mainnet + Greenfield.
-        """
-        return Rune.builder().chain_backend(private_key, network="mainnet", **kwargs).build()
-
-    # ── Builder Access ──────────────────────────────────────────────
-
-    @staticmethod
-    def builder() -> "RuneBuilder":
-        """
-        Start building a custom provider configuration.
-
-        Returns:
-            RuneBuilder for fluent configuration.
-        """
-        return RuneBuilder()
+    return builder().chain_backend(private_key, network="testnet", **kwargs).build()
 
 
-class RuneBuilder:
+def mainnet(private_key: str, **kwargs) -> AgentRuntime:
+    """Create a mainnet-mode runtime — BSC mainnet + Greenfield mainnet.
+
+    Args:
+        private_key: BSC wallet private key.
+        **kwargs: Additional :class:`ChainBackend` options.
+
+    Returns:
+        An :class:`AgentRuntime` backed by :class:`ChainBackend`.
     """
-    Fluent builder for RuneProvider.
+    return builder().chain_backend(private_key, network="mainnet", **kwargs).build()
 
-    Allows fine-grained control over backend, flush policy, and runtime ID.
 
-    Usage:
-        rune = (
-            Rune.builder()
+def builder() -> "Builder":
+    """Start building a custom runtime configuration.
+
+    Returns:
+        A fluent :class:`Builder`.
+    """
+    return Builder()
+
+
+# ── Builder ───────────────────────────────────────────────────────────
+
+
+class Builder:
+    """Fluent builder for :class:`AgentRuntime`.
+
+    Use this when the simple factory functions (:func:`local`,
+    :func:`testnet`, :func:`mainnet`) don't fit — e.g. custom
+    flush policy, an injected backend, or a specific runtime id
+    for multi-runtime scenarios.
+
+    Usage::
+
+        import nexus_core
+        rt = (
+            nexus_core.builder()
             .backend(my_custom_backend)
             .flush_policy(FlushPolicy.aggressive())
             .runtime_id("prod-runtime-1")
@@ -136,53 +135,49 @@ class RuneBuilder:
         self._flush_policy: FlushPolicy = FlushPolicy.balanced()
         self._runtime_id: Optional[str] = None
 
-    def backend(self, backend: StorageBackend) -> "RuneBuilder":
+    def backend(self, backend: StorageBackend) -> "Builder":
         """Set a custom storage backend."""
         self._backend = backend
         return self
 
-    def local_backend(self, base_dir: str = ".rune_state") -> "RuneBuilder":
-        """Use LocalBackend (file-based, zero config)."""
+    def local_backend(self, base_dir: str = ".nexus_state") -> "Builder":
+        """Use :class:`LocalBackend` (file-based, zero config)."""
         from .backends.local import LocalBackend
         self._backend = LocalBackend(base_dir=base_dir)
         return self
 
-    def chain_backend(self, private_key: str, network: str = "testnet", **kwargs) -> "RuneBuilder":
-        """Use ChainBackend (BSC + Greenfield)."""
+    def chain_backend(self, private_key: str, network: str = "testnet", **kwargs) -> "Builder":
+        """Use :class:`ChainBackend` (BSC + Greenfield)."""
         from .backends.chain import ChainBackend
         self._backend = ChainBackend(private_key=private_key, network=network, **kwargs)
         return self
 
-    def mock_backend(self) -> "RuneBuilder":
-        """Use MockBackend (in-memory, for tests)."""
+    def mock_backend(self) -> "Builder":
+        """Use :class:`MockBackend` (in-memory, for tests)."""
         from .backends.mock import MockBackend
         self._backend = MockBackend()
         return self
 
-    def flush_policy(self, policy: FlushPolicy) -> "RuneBuilder":
+    def flush_policy(self, policy: FlushPolicy) -> "Builder":
         """Set the flush policy for write batching."""
         self._flush_policy = policy
         return self
 
-    def runtime_id(self, rid: str) -> "RuneBuilder":
+    def runtime_id(self, rid: str) -> "Builder":
         """Set the runtime identifier (for multi-runtime scenarios)."""
         self._runtime_id = rid
         return self
 
-    def build(self) -> RuneProvider:
-        """
-        Build the RuneProvider with all configured options.
+    def build(self) -> AgentRuntime:
+        """Build the :class:`AgentRuntime` with all configured options.
 
-        If no backend was set, defaults to LocalBackend.
-
-        Returns:
-            Fully configured RuneProvider.
+        If no backend was set, defaults to :class:`LocalBackend`.
         """
         if self._backend is None:
             from .backends.local import LocalBackend
             self._backend = LocalBackend()
 
-        return RuneProvider(
+        return AgentRuntime(
             sessions=SessionProviderImpl(
                 self._backend,
                 runtime_id=self._runtime_id,

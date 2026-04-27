@@ -23,16 +23,16 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nexus_core import Rune
+import nexus_core
 from nexus_core.core.models import Checkpoint, MemoryEntry, Artifact
-from nexus_core.core.providers import RuneProvider
+from nexus_core.core.providers import AgentRuntime
 from nexus_core.backends.mock import MockBackend
 from nexus_core.backends.local import LocalBackend
 from nexus_core.providers.session import SessionProviderImpl
 from nexus_core.providers.memory import MemoryProviderImpl
 from nexus_core.providers.artifact import ArtifactProviderImpl
 from nexus_core.adapters.adk import RuneSessionService, RuneMemoryService, RuneArtifactService
-from nexus_core.builder import RuneBuilder
+from nexus_core.builder import Builder
 
 # Try ADK imports
 try:
@@ -87,22 +87,22 @@ SESSION_2_QUERIES = [
 @pytest.fixture
 def mock_rune():
     """Rune instance with MockBackend."""
-    return Rune.builder().mock_backend().build()
+    return nexus_core.builder().mock_backend().build()
 
 
 @pytest.fixture
 def local_rune(tmp_path):
     """Rune instance with LocalBackend."""
-    return Rune.local(base_dir=str(tmp_path / "rune_regression"))
+    return nexus_core.local(base_dir=str(tmp_path / "rune_regression"))
 
 
 @pytest.fixture(params=["mock", "local"])
 def rune(request, tmp_path):
     """Parametrized fixture: run tests against both mock and local backends."""
     if request.param == "mock":
-        return Rune.builder().mock_backend().build()
+        return nexus_core.builder().mock_backend().build()
     else:
-        return Rune.local(base_dir=str(tmp_path / "rune_regression"))
+        return nexus_core.local(base_dir=str(tmp_path / "rune_regression"))
 
 
 def make_event(step_idx: int, result: str):
@@ -353,7 +353,7 @@ class TestDemo03CrashRecovery:
         instance, then creates a new one and verifies data persisted.
         """
         base_dir = str(tmp_path / "crash_local")
-        rune = Rune.local(base_dir=base_dir)
+        rune = nexus_core.local(base_dir=base_dir)
         sid = "local-crash-test"
         agent_id = "app:u1"
 
@@ -371,7 +371,7 @@ class TestDemo03CrashRecovery:
         del rune  # "crash"
 
         # Completely new Rune instance (simulates new process)
-        rune2 = Rune.local(base_dir=base_dir)
+        rune2 = nexus_core.local(base_dir=base_dir)
         loaded_cp = await rune2.sessions.load_checkpoint(agent_id, sid, cp_id)
         assert loaded_cp is not None
         assert loaded_cp.state["current_step"] == 3
@@ -760,15 +760,15 @@ class TestFullIntegration:
 
     @pytest.mark.asyncio
     async def test_builder_modes(self, tmp_path):
-        """Rune.local() and Rune.builder().mock_backend() both work."""
+        """nexus_core.local() and nexus_core.builder().mock_backend() both work."""
         # MockBackend
-        rune_mock = Rune.builder().mock_backend().build()
+        rune_mock = nexus_core.builder().mock_backend().build()
         await rune_mock.memory.add("fact", agent_id="a1")
         results = await rune_mock.memory.search("fact", agent_id="a1")
         assert len(results) > 0
 
         # LocalBackend
-        rune_local = Rune.local(base_dir=str(tmp_path / "builder_test"))
+        rune_local = nexus_core.local(base_dir=str(tmp_path / "builder_test"))
         await rune_local.memory.add("fact", agent_id="a1")
         results = await rune_local.memory.search("fact", agent_id="a1")
         assert len(results) > 0
@@ -776,7 +776,7 @@ class TestFullIntegration:
     @pytest.mark.asyncio
     async def test_context_manager(self):
         """Rune works as async context manager."""
-        async with Rune.builder().mock_backend().build() as rune:
+        async with nexus_core.builder().mock_backend().build() as rune:
             svc = RuneSessionService(rune.sessions)
             session = await svc.create_session(
                 app_name="test", user_id="u1", session_id="ctx-test",

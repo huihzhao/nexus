@@ -13,9 +13,9 @@
  *   { "ok": false, "error": "..." }
  *
  * Environment:
- *   RUNE_PRIVATE_KEY           — wallet private key (0x...)
- *   RUNE_GREENFIELD_BUCKET     — bucket name (default: rune-agent-state)
- *   RUNE_GREENFIELD_NETWORK    — testnet (default) or mainnet
+ *   NEXUS_PRIVATE_KEY           — wallet private key (0x...)
+ *   NEXUS_GREENFIELD_BUCKET     — bucket name (default: nexus-agent-state)
+ *   NEXUS_GREENFIELD_NETWORK    — testnet (default) or mainnet
  */
 
 const { readFileSync } = require("fs");
@@ -43,9 +43,9 @@ function out(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
-const PRIVATE_KEY = process.env.RUNE_PRIVATE_KEY;
-const BUCKET = process.env.RUNE_GREENFIELD_BUCKET || "rune-agent-state";
-const NETWORK = process.env.RUNE_GREENFIELD_NETWORK || "testnet";
+const PRIVATE_KEY = process.env.NEXUS_PRIVATE_KEY;
+const BUCKET = process.env.NEXUS_GREENFIELD_BUCKET || "nexus-agent-state";
+const NETWORK = process.env.NEXUS_GREENFIELD_NETWORK || "testnet";
 
 const CONFIGS = {
   testnet: { chainId: "5600", chainRpc: "https://gnfd-testnet-fullnode-tendermint-us.bnbchain.org" },
@@ -54,7 +54,7 @@ const CONFIGS = {
 
 async function main() {
   if (!PRIVATE_KEY) {
-    out({ ok: false, error: "RUNE_PRIVATE_KEY not set" });
+    out({ ok: false, error: "NEXUS_PRIVATE_KEY not set" });
     process.exit(1);
   }
 

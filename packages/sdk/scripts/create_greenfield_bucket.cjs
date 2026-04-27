@@ -6,9 +6,9 @@
  *   node scripts/create_greenfield_bucket.cjs [bucket_name]
  *
  * Environment:
- *   RUNE_PRIVATE_KEY           — wallet private key (0x...)
- *   RUNE_GREENFIELD_BUCKET     — bucket name (default: rune-agent-state)
- *   RUNE_GREENFIELD_NETWORK    — testnet (default) or mainnet
+ *   NEXUS_PRIVATE_KEY           — wallet private key (0x...)
+ *   NEXUS_GREENFIELD_BUCKET     — bucket name (default: nexus-agent-state)
+ *   NEXUS_GREENFIELD_NETWORK    — testnet (default) or mainnet
  */
 
 const { readFileSync } = require("fs");
@@ -38,14 +38,14 @@ function loadEnv() {
 }
 loadEnv();
 
-const PRIVATE_KEY = process.env.RUNE_PRIVATE_KEY;
+const PRIVATE_KEY = process.env.NEXUS_PRIVATE_KEY;
 if (!PRIVATE_KEY) {
-  console.error("❌ RUNE_PRIVATE_KEY not set");
+  console.error("❌ NEXUS_PRIVATE_KEY not set");
   process.exit(1);
 }
 
-const BUCKET_NAME = process.argv[2] || process.env.RUNE_GREENFIELD_BUCKET || "rune-agent-state";
-const NETWORK = process.env.RUNE_GREENFIELD_NETWORK || "testnet";
+const BUCKET_NAME = process.argv[2] || process.env.NEXUS_GREENFIELD_BUCKET || "nexus-agent-state";
+const NETWORK = process.env.NEXUS_GREENFIELD_NETWORK || "testnet";
 
 const CONFIGS = {
   testnet: {

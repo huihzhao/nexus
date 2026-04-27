@@ -7,7 +7,7 @@ Uses MockBackend and a mock LLM — no external API calls needed.
 import json
 import pytest
 
-from nexus_core import Rune
+import nexus_core
 
 from nexus.config import TwinConfig, LLMProvider
 from nexus.twin import DigitalTwin
@@ -110,7 +110,7 @@ class MockLLMClient:
 # ── Helpers ──────────────────────────────────────────────────────
 
 def make_rune():
-    return Rune.builder().mock_backend().build()
+    return nexus_core.builder().mock_backend().build()
 
 
 def make_twin(rune=None, llm=None):

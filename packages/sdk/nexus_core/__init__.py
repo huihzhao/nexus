@@ -1,57 +1,60 @@
 """
-Rune Protocol SDK — Persistent, Verifiable Agent Infrastructure on BNBChain.
+nexus_core — Persistent, Verifiable Agent Infrastructure on BNBChain.
 
-"Runtime Is Temporary, Identity Is Eternal."
+"Runtime is temporary; identity is eternal."
 
-Quick start:
-    from nexus_core import Rune
+Quick start::
 
-    rune = Rune.local()                          # Zero config
-    rune = Rune.testnet(private_key="0x...")      # BSC testnet
-    rune = Rune.builder().mock_backend().build()  # Unit tests
+    import nexus_core
+
+    rt = nexus_core.local()                          # Zero config (file-backed)
+    rt = nexus_core.testnet(private_key="0x...")     # BSC testnet + Greenfield
+    rt = nexus_core.builder().mock_backend().build() # Unit tests / custom config
 
 Architecture:
 
-  Entry Point:
-    - Rune:               Static factories + builder access
-    - RuneBuilder:        Fluent builder for custom configurations
+  Entry points (top-level functions):
+    - nexus_core.local() / testnet() / mainnet() / builder()
 
-  Core Abstractions:
-    - StorageBackend:     Strategy pattern — pluggable persistence
-    - RuneProvider:       Facade — bundles 5 providers
-    - RuneSessionProvider, RuneMemoryProvider, RuneArtifactProvider, RuneTaskProvider
-    - RuneImpressionProvider (Social Protocol)
+  Core types:
+    - StorageBackend     — strategy pattern, pluggable persistence.
+    - AgentRuntime       — facade returned by the entry-point functions;
+                           bundles the 5 sub-providers below.
+    - SessionProvider, MemoryProvider, ArtifactProvider, TaskProvider,
+      ImpressionProvider — abstract interfaces for the 5 concerns.
+    - Builder            — fluent runtime builder.
 
   Social Protocol:
-    - social.gossip:      Async/sync agent-to-agent gossip
-    - social.profile:     Agent profile generation + discovery
-    - social.graph:       Social graph queries + propagation
+    - social.gossip      — async/sync agent-to-agent gossip
+    - social.profile     — agent profile generation + discovery
+    - social.graph       — social graph queries + propagation
 
   Backends (Strategy implementations):
-    - LocalBackend:       File-based (dev/demo)
-    - ChainBackend:       BSC + Greenfield (production)
-    - MockBackend:        In-memory (unit tests)
+    - LocalBackend       — file-based (dev/demo)
+    - ChainBackend       — BSC + Greenfield (production)
+    - MockBackend        — in-memory (unit tests)
 
-  Framework Adapters:
-    - adapters.adk:       Google ADK
-    - adapters.langgraph: LangGraph
-    - adapters.crewai:    CrewAI
+  Framework adapters:
+    - adapters.adk       — Google ADK
+    - adapters.langgraph — LangGraph
+    - adapters.crewai    — CrewAI
+    - adapters.a2a       — A2A protocol (StatelessA2AAgent, A2ARuntime)
 """
 
 __version__ = "0.5.0"
 
-# ── Entry point + builder ──────────────────────────────────────────────
-from .builder import Rune, RuneBuilder
+# ── Entry points + Builder ─────────────────────────────────────────────
+from .builder import local, testnet, mainnet, builder, Builder
 
 # ── Core abstractions ──────────────────────────────────────────────────
 from .core.backend import StorageBackend
 from .core.providers import (
-    RuneProvider,
-    RuneSessionProvider,
-    RuneMemoryProvider,
-    RuneArtifactProvider,
-    RuneTaskProvider,
-    RuneImpressionProvider,
+    AgentRuntime,
+    SessionProvider,
+    MemoryProvider,
+    ArtifactProvider,
+    TaskProvider,
+    ImpressionProvider,
 )
 from .core.models import (
     Checkpoint, MemoryEntry, MemoryCompact, Artifact,
@@ -106,9 +109,9 @@ from .distiller import (
 )
 
 try:
-    from .chain import RuneChainClient
+    from .chain import BSCClient
 except ImportError:
-    RuneChainClient = None
+    BSCClient = None
 
 # ── A2A (Agent-to-Agent) ──────────────────────────────────────────────
 # a2a_task_store + a2a depend on the optional a2a-sdk package (declared
@@ -120,12 +123,12 @@ except ImportError:
 # a working ``nexus_core`` package.
 try:
     from .adapters.a2a_task_store import BNBChainTaskStore
-    from .adapters.a2a import StatelessA2AAgent, AgentRuntime, A2AAgentConfig
+    from .adapters.a2a import StatelessA2AAgent, A2ARuntime, A2AAgentConfig
     _A2A_AVAILABLE = True
 except Exception as _a2a_err:  # noqa: BLE001 — optional integration
     BNBChainTaskStore = None
     StatelessA2AAgent = None
-    AgentRuntime = None
+    A2ARuntime = None
     A2AAgentConfig = None
     _A2A_AVAILABLE = False
     import logging as _logging
@@ -156,20 +159,25 @@ from .memory import EventLog, Event, CuratedMemory, EventLogCompactor
 from .contracts import ContractEngine, ContractSpec, CheckResult, DriftScore, Rule
 
 try:
-    from .keystore import RuneKeystore
+    from .keystore import Keystore
 except ImportError:
-    RuneKeystore = None
+    Keystore = None
 
 __all__ = [
-    # Primary API
-    "Rune",
-    "RuneBuilder",
+    # Entry points + builder
+    "local",
+    "testnet",
+    "mainnet",
+    "builder",
+    "Builder",
+    # Core types
     "StorageBackend",
-    "RuneProvider",
-    "RuneSessionProvider",
-    "RuneMemoryProvider",
-    "RuneArtifactProvider",
-    "RuneTaskProvider",
+    "AgentRuntime",
+    "SessionProvider",
+    "MemoryProvider",
+    "ArtifactProvider",
+    "TaskProvider",
+    "ImpressionProvider",
     "Checkpoint",
     "MemoryEntry",
     "MemoryCompact",
@@ -187,7 +195,6 @@ __all__ = [
     "ImpressionProviderImpl",
     "AdapterRegistry",
     # Social Protocol
-    "RuneImpressionProvider",
     "Impression",
     "ImpressionDimensions",
     "ImpressionSummary",
@@ -202,17 +209,17 @@ __all__ = [
     "StateManager",
     "ERC8004Identity",
     "AgentStateRecord",
-    "RuneChainClient",
+    "BSCClient",
     "GreenfieldClient",
     # A2A
     "BNBChainTaskStore",
     "StatelessA2AAgent",
-    "AgentRuntime",
+    "A2ARuntime",
     "A2AAgentConfig",
     # Framework services
     "BNBChainSessionService",
     "BNBChainArtifactService",
-    "RuneKeystore",
+    "Keystore",
     # Tools & MCP
     "BaseTool",
     "ToolResult",

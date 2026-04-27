@@ -13,7 +13,7 @@ Usage:
     from nexus_core import Rune
     from nexus_core.adapters.adk import RuneSessionService, RuneMemoryService, RuneArtifactService
 
-    rune = Rune.local()
+    rune = nexus_core.local()
 
     runner = Runner(
         agent=my_agent,
@@ -30,7 +30,7 @@ import uuid
 from typing import Any, Optional
 
 from ..core.models import Checkpoint, MemoryEntry
-from ..core.providers import RuneSessionProvider, RuneMemoryProvider, RuneArtifactProvider
+from ..core.providers import SessionProvider, MemoryProvider, ArtifactProvider
 
 # ADK imports are optional — only needed when actually using this adapter
 try:
@@ -58,13 +58,13 @@ from .registry import AdapterRegistry
 
 class RuneSessionService(BaseSessionService):
     """
-    Adapter: ADK BaseSessionService → RuneSessionProvider.
+    Adapter: ADK BaseSessionService → SessionProvider.
 
     Converts ADK Session/Event objects ↔ Rune Checkpoints,
     then delegates all persistence to the provider.
     """
 
-    def __init__(self, session_provider: RuneSessionProvider):
+    def __init__(self, session_provider: SessionProvider):
         self._provider = session_provider
         self._sessions: dict[str, Any] = {}
 
@@ -196,10 +196,10 @@ class RuneSessionService(BaseSessionService):
 
 class RuneMemoryService(BaseMemoryService):
     """
-    Adapter: ADK BaseMemoryService → RuneMemoryProvider.
+    Adapter: ADK BaseMemoryService → MemoryProvider.
     """
 
-    def __init__(self, memory_provider: RuneMemoryProvider):
+    def __init__(self, memory_provider: MemoryProvider):
         self._provider = memory_provider
 
     async def add_session_to_memory(self, session: Any) -> None:
@@ -261,10 +261,10 @@ class RuneMemoryService(BaseMemoryService):
 
 class RuneArtifactService(BaseArtifactService):
     """
-    Adapter: ADK BaseArtifactService → RuneArtifactProvider.
+    Adapter: ADK BaseArtifactService → ArtifactProvider.
     """
 
-    def __init__(self, artifact_provider: RuneArtifactProvider):
+    def __init__(self, artifact_provider: ArtifactProvider):
         self._provider = artifact_provider
 
     async def save_artifact(

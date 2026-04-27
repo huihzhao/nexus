@@ -1,5 +1,5 @@
 """
-SessionProviderImpl — concrete RuneSessionProvider backed by StorageBackend.
+SessionProviderImpl — concrete SessionProvider backed by StorageBackend.
 
 Domain logic:
   - Checkpoint parent linking (builds a history chain)
@@ -18,10 +18,10 @@ from typing import Optional
 
 from ..core.backend import StorageBackend
 from ..core.models import Checkpoint
-from ..core.providers import RuneSessionProvider
+from ..core.providers import SessionProvider
 
 
-class SessionProviderImpl(RuneSessionProvider):
+class SessionProviderImpl(SessionProvider):
     """
     Concrete session/checkpoint provider.
 

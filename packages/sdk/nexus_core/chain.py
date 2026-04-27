@@ -7,9 +7,9 @@ Wraps the three contract layers:
   3. TaskStateManager.sol   (Rune contract)
 
 Usage:
-    from nexus_core.chain import RuneChainClient
+    from nexus_core.chain import BSCClient
 
-    client = RuneChainClient(
+    client = BSCClient(
         rpc_url="https://data-seed-prebsc-1-s1.bnbchain.org:8545",
         private_key="0x...",
         agent_state_address="0x...",
@@ -33,7 +33,7 @@ from typing import Optional, Tuple
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 
-logger = logging.getLogger("rune.chain")
+logger = logging.getLogger("nexus_core.chain")
 
 # ── Contract addresses ───────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ def _load_abi(name: str) -> list:
         return json.load(f)
 
 
-class RuneChainClient:
+class BSCClient:
     """
     Web3.py client for Rune Protocol contracts on BSC.
 
@@ -409,7 +409,7 @@ class RuneChainClient:
 
         # Try real ERC-8004 register() first
         try:
-            uri = agent_name or f"rune-agent-{agent_id}"
+            uri = agent_name or f"nexus-agent-{agent_id}"
             new_id = self.register_agent(uri)
             logger.info(
                 "Agent registered via ERC-8004 register(): requested=%s, assigned=%s",

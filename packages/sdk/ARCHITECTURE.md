@@ -117,7 +117,7 @@ if compactor.should_compact(turn_count=20):
 ### Layout B — One bucket per agent (CANONICAL)
 
 ```
-rune-agent-{erc8004_token_id}/                 ← Bucket per ERC-8004 NFT
+nexus-agent-{erc8004_token_id}/                 ← Bucket per ERC-8004 NFT
   sync/
     {content_hash}.json                        ← One JSON per anchor batch
   sessions/...
@@ -133,7 +133,7 @@ multi-tenant SaaS. Use the helper:
 ```python
 from bnbchain_agent import bucket_for_agent
 
-bucket = bucket_for_agent(token_id)            # → "rune-agent-864"
+bucket = bucket_for_agent(token_id)            # → "nexus-agent-864"
 backend = ChainBackend(private_key=..., greenfield_bucket=bucket)
 ```
 
@@ -146,13 +146,13 @@ Rationale:
 - **Blast radius isolation.** A malformed write or compromised agent
   can only affect its own bucket.
 - **Naming is well-formed.** ERC-8004 tokenIds are uint256; the bucket
-  name `rune-agent-{N}` stays under Greenfield's 63-char ceiling for
+  name `nexus-agent-{N}` stays under Greenfield's 63-char ceiling for
   any realistic N and avoids the IP-address-shape rule.
 
 ### Layout A — Single shared bucket (LEGACY)
 
 ```
-rune-agent-state/
+nexus-agent-state/
   agents/{agent_id}/
     sessions/...
     memory/...
@@ -160,7 +160,7 @@ rune-agent-state/
 ```
 
 `GreenfieldClient` and `ChainBackend` still accept the legacy single
-bucket name `rune-agent-state` for backward compatibility, but emit a
+bucket name `nexus-agent-state` for backward compatibility, but emit a
 `DeprecationWarning` at construction time. Standalone Nexus dev
 sessions that haven't acquired an ERC-8004 token id may still rely on
 this — they should pass `bucket_name=...` explicitly to silence the

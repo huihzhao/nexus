@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Any
 
-from nexus_core import RuneProvider
+from nexus_core import AgentRuntime
 from nexus_core.utils import robust_json_parse as _sdk_robust_json_parse
 from nexus_core.utils.json_parse import extract_balanced as _extract_balanced
 
@@ -110,7 +110,7 @@ class MemoryEvolver:
 
     def __init__(
         self,
-        rune: RuneProvider,
+        rune: AgentRuntime,
         agent_id: str,
         llm_fn: Any,
         max_memories: int = DEFAULT_MAX_MEMORIES,

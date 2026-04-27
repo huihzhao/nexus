@@ -31,7 +31,7 @@ from a2a.server.request_handlers.request_handler import ServerCallContext
 from nexus_core.state import StateManager
 from nexus_core.flush import FlushPolicy
 
-logger = logging.getLogger("rune.a2a_task_store")
+logger = logging.getLogger("nexus_core.a2a_task_store")
 
 # Terminal A2A states — always sync to BSC
 _TERMINAL_STATES = {TaskState.completed, TaskState.failed, TaskState.canceled, TaskState.rejected}

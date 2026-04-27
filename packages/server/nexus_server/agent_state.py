@@ -428,7 +428,7 @@ async def get_agent_state(
         user_id=current_user,
         chain_agent_id=chain_agent_id,
         chain_register_tx=register_tx,
-        network=config.RUNE_NETWORK,
+        network=config.NEXUS_NETWORK,
         on_chain=chain_agent_id is not None,
         memory_count=memory_compact_count(current_user),
         anchored_count=anchored,

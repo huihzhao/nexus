@@ -2,7 +2,7 @@
 Tests for framework-agnostic Rune Providers.
 
 Tests the provider interfaces, concrete implementations, and Rune factory.
-Uses the new architecture: Rune.local() / MockBackend / provider impls.
+Uses the new architecture: nexus_core.local() / MockBackend / provider impls.
 """
 
 import asyncio
@@ -11,8 +11,8 @@ import shutil
 import pytest
 from pathlib import Path
 
+import nexus_core
 from nexus_core import (
-    Rune,
     Checkpoint,
     MemoryEntry,
     Artifact,
@@ -41,7 +41,7 @@ def clean_state():
 @pytest.fixture
 def rune():
     """Create a Rune instance with MockBackend for fast, isolated tests."""
-    return Rune.builder().mock_backend().build()
+    return nexus_core.builder().mock_backend().build()
 
 
 @pytest.fixture
@@ -340,21 +340,21 @@ class TestTaskProvider:
 
 class TestRuneFactory:
     def test_mock_backend(self):
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
         assert rune.sessions is not None
         assert rune.memory is not None
         assert rune.artifacts is not None
         assert rune.tasks is not None
 
     def test_local_backend(self):
-        rune = Rune.local(base_dir=TEST_DIR)
+        rune = nexus_core.local(base_dir=TEST_DIR)
         assert rune.sessions is not None
         assert rune.memory is not None
         assert rune.artifacts is not None
         assert rune.tasks is not None
 
     def test_full_workflow(self):
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
 
         # Save checkpoint
         cp = Checkpoint(

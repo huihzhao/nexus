@@ -1,5 +1,5 @@
 """
-TaskProviderImpl — concrete RuneTaskProvider backed by StorageBackend.
+TaskProviderImpl — concrete TaskProvider backed by StorageBackend.
 
 Domain logic:
   - Task creation with agent association
@@ -18,10 +18,10 @@ import time
 from typing import Optional
 
 from ..core.backend import StorageBackend
-from ..core.providers import RuneTaskProvider
+from ..core.providers import TaskProvider
 
 
-class TaskProviderImpl(RuneTaskProvider):
+class TaskProviderImpl(TaskProvider):
     """
     Concrete task lifecycle provider.
 

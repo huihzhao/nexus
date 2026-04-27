@@ -159,7 +159,7 @@ def main():
 
   For real BSC testnet:
     1. Get tBNB from https://www.bnbchain.org/en/testnet-faucet
-    2. Set RUNE_PRIVATE_KEY in .env
+    2. Set NEXUS_PRIVATE_KEY in .env
     3. Deploy contracts: cd contracts && npx hardhat run scripts/deploy.js --network bscTestnet
     4. Run: python demo/run_all.py --mode testnet
     """)

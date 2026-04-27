@@ -3,11 +3,11 @@ Rune Nexus — Self-evolving AI avatar powered by Rune Protocol SDK.
 
 Startup flow:
   1. If chain mode (private_key provided):
-     a. Connect to BSC via Rune.testnet() / Rune.mainnet()
+     a. Connect to BSC via nexus_core.testnet() / nexus_core.mainnet()
      b. Register ERC-8004 identity (one-time, auto-detected)
      c. All data persists to BSC + Greenfield
   2. If local mode (no private_key):
-     a. Use Rune.local()
+     a. Use nexus_core.local()
      b. All data persists to local files
 """
 
@@ -21,7 +21,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from nexus_core import Rune, RuneProvider, Checkpoint, LLMClient, LLMProvider
+import nexus_core
+from nexus_core import AgentRuntime, Checkpoint, LLMClient, LLMProvider
 
 from .config import TwinConfig
 from .evolution.engine import EvolutionEngine
@@ -50,7 +51,7 @@ class DigitalTwin:
         await twin.close()
     """
 
-    def __init__(self, config: TwinConfig, rune: RuneProvider, llm: LLMClient):
+    def __init__(self, config: TwinConfig, rune: AgentRuntime, llm: LLMClient):
         self.config = config
         self.rune = rune
         self.llm = llm
@@ -68,7 +69,7 @@ class DigitalTwin:
         self._file_reader = None  # Set by _register_default_tools
 
         # Skill manager — external skills (Binance Skills Hub compatible)
-        from .skills import SkillManager
+        from nexus_core.skills import SkillManager
         self.skills = SkillManager(base_dir=config.base_dir)
 
         # DPM: Event log (append-only, SDK layer) + Projection (Nexus layer)
@@ -186,12 +187,12 @@ class DigitalTwin:
                 chain_kwargs["greenfield_bucket"] = greenfield_bucket
 
             if "mainnet" in network:
-                rune = Rune.mainnet(private_key=private_key, **chain_kwargs)
+                rune = nexus_core.mainnet(private_key=private_key, **chain_kwargs)
             else:
-                rune = Rune.testnet(private_key=private_key, **chain_kwargs)
+                rune = nexus_core.testnet(private_key=private_key, **chain_kwargs)
             logger.info("Chain mode: BSC %s + Greenfield", network)
         else:
-            rune = Rune.local(base_dir=base_dir)
+            rune = nexus_core.local(base_dir=base_dir)
             logger.info("Local mode: data stored in %s", base_dir)
 
         llm = LLMClient(
@@ -350,8 +351,8 @@ class DigitalTwin:
         Missing dependencies are logged but don't prevent startup.
         """
         try:
-            from .tools.web_search import WebSearchTool
-            from .tools.url_reader import URLReaderTool
+            from nexus_core.tools.web_search import WebSearchTool
+            from nexus_core.tools.url_reader import URLReaderTool
 
             tavily_key = tavily_api_key or os.environ.get("TAVILY_API_KEY", "")
             jina_key = jina_api_key or os.environ.get("JINA_API_KEY", "")
@@ -385,7 +386,7 @@ class DigitalTwin:
                   parameters, and execute() method.
 
         Example:
-            from nexus.tools import BaseTool, ToolResult
+            from nexus_core.tools import BaseTool, ToolResult
 
             class MyTool(BaseTool):
                 name = "my_tool"
@@ -430,20 +431,20 @@ class DigitalTwin:
     async def _init_chain_client_async(self) -> None:
         """Initialize chain_client in background (non-blocking startup)."""
         try:
-            from nexus_core.chain import RuneChainClient
+            from nexus_core.chain import BSCClient
             cfg = self.config
             net_prefix = "MAINNET" if "mainnet" in cfg.network else "TESTNET"
-            rpc_url = cfg.rpc_url or os.environ.get(f"RUNE_{net_prefix}_RPC", "")
-            agent_state_addr = cfg.agent_state_address or os.environ.get(f"RUNE_{net_prefix}_AGENT_STATE_ADDRESS", "")
+            rpc_url = cfg.rpc_url or os.environ.get(f"NEXUS_{net_prefix}_RPC", "")
+            agent_state_addr = cfg.agent_state_address or os.environ.get(f"NEXUS_{net_prefix}_AGENT_STATE_ADDRESS", "")
             identity_registry_addr = (
                 cfg.identity_registry_address
-                or os.environ.get(f"RUNE_{net_prefix}_IDENTITY_REGISTRY", "")
-                or os.environ.get(f"RUNE_{net_prefix}_IDENTITY_REGISTRY_ADDRESS", "")
+                or os.environ.get(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY", "")
+                or os.environ.get(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY_ADDRESS", "")
             )
-            task_manager_addr = cfg.task_manager_address or os.environ.get(f"RUNE_{net_prefix}_TASK_MANAGER_ADDRESS", "")
+            task_manager_addr = cfg.task_manager_address or os.environ.get(f"NEXUS_{net_prefix}_TASK_MANAGER_ADDRESS", "")
 
             if rpc_url:
-                self._chain_client = RuneChainClient(
+                self._chain_client = BSCClient(
                     rpc_url=rpc_url,
                     private_key=cfg.private_key,
                     agent_state_address=agent_state_addr or None,
@@ -460,7 +461,7 @@ class DigitalTwin:
 
     def _identity_cache_path(self) -> Path:
         """Local file that caches the ERC-8004 agent ID after first registration."""
-        cache_dir = Path(os.environ.get("RUNE_CACHE_DIR", ".rune_cache"))
+        cache_dir = Path(os.environ.get("NEXUS_CACHE_DIR", ".rune_cache"))
         cache_dir.mkdir(parents=True, exist_ok=True)
         safe_id = self.config.agent_id.replace("/", "_").replace("\\", "_")
         return cache_dir / f"identity_{safe_id}_{self.config.network}.json"
@@ -498,7 +499,7 @@ class DigitalTwin:
         On success, caches the identity locally so next startup is instant.
         """
         try:
-            from nexus_core.chain import RuneChainClient
+            from nexus_core.chain import BSCClient
         except ImportError:
             logger.warning("web3 not installed — skipping ERC-8004 registration")
             return
@@ -506,21 +507,21 @@ class DigitalTwin:
         cfg = self.config
         net_prefix = "MAINNET" if "mainnet" in cfg.network else "TESTNET"
 
-        rpc_url = cfg.rpc_url or os.environ.get(f"RUNE_{net_prefix}_RPC", "")
-        agent_state_addr = cfg.agent_state_address or os.environ.get(f"RUNE_{net_prefix}_AGENT_STATE_ADDRESS", "")
+        rpc_url = cfg.rpc_url or os.environ.get(f"NEXUS_{net_prefix}_RPC", "")
+        agent_state_addr = cfg.agent_state_address or os.environ.get(f"NEXUS_{net_prefix}_AGENT_STATE_ADDRESS", "")
         identity_registry_addr = (
             cfg.identity_registry_address
-            or os.environ.get(f"RUNE_{net_prefix}_IDENTITY_REGISTRY", "")
-            or os.environ.get(f"RUNE_{net_prefix}_IDENTITY_REGISTRY_ADDRESS", "")
+            or os.environ.get(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY", "")
+            or os.environ.get(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY_ADDRESS", "")
         )
-        task_manager_addr = cfg.task_manager_address or os.environ.get(f"RUNE_{net_prefix}_TASK_MANAGER_ADDRESS", "")
+        task_manager_addr = cfg.task_manager_address or os.environ.get(f"NEXUS_{net_prefix}_TASK_MANAGER_ADDRESS", "")
 
         if not rpc_url or not identity_registry_addr:
             logger.warning("No BSC RPC or Identity Registry configured — skipping registration")
             return
 
         try:
-            chain_client = RuneChainClient(
+            chain_client = BSCClient(
                 rpc_url=rpc_url,
                 private_key=cfg.private_key,
                 agent_state_address=agent_state_addr or None,
@@ -673,11 +674,11 @@ class DigitalTwin:
 
             cfg = self.config
             net_prefix = "MAINNET" if "mainnet" in cfg.network else "TESTNET"
-            agent_state_addr = cfg.agent_state_address or os.environ.get(f"RUNE_{net_prefix}_AGENT_STATE_ADDRESS", "")
+            agent_state_addr = cfg.agent_state_address or os.environ.get(f"NEXUS_{net_prefix}_AGENT_STATE_ADDRESS", "")
             identity_registry_addr = (
                 cfg.identity_registry_address
-                or os.environ.get(f"RUNE_{net_prefix}_IDENTITY_REGISTRY", "")
-                or os.environ.get(f"RUNE_{net_prefix}_IDENTITY_REGISTRY_ADDRESS", "")
+                or os.environ.get(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY", "")
+                or os.environ.get(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY_ADDRESS", "")
             )
             if agent_state_addr:
                 parts.append(f"- AgentState Contract: {agent_state_addr}")
@@ -1093,7 +1094,7 @@ class DigitalTwin:
 
         if not self.config.use_chain:
             lines.append("Storage mode: LOCAL (no chain connection)")
-            lines.append("Set RUNE_PRIVATE_KEY in .env to enable chain mode.")
+            lines.append("Set NEXUS_PRIVATE_KEY in .env to enable chain mode.")
             return "\n".join(lines)
 
         lines.append(f"Storage mode: CHAIN ({self.config.network})")
@@ -1324,7 +1325,7 @@ class DigitalTwin:
     async def _sync_chain(self) -> str:
         """Manual /sync command: force identity registration + state anchoring."""
         if not self.config.use_chain:
-            return "Not in chain mode. Set RUNE_PRIVATE_KEY to enable."
+            return "Not in chain mode. Set NEXUS_PRIVATE_KEY to enable."
 
         lines = ["=== Chain Sync ==="]
 

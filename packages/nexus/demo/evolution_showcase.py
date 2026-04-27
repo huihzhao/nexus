@@ -22,7 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nexus_core import Rune
+import nexus_core
 
 from nexus.config import TwinConfig
 from nexus.twin import DigitalTwin
@@ -219,7 +219,7 @@ async def main():
 +======================================================================+
     """)
 
-    rune = Rune.builder().mock_backend().build()
+    rune = nexus_core.builder().mock_backend().build()
     llm = MockLLMClient()
     agent_id = "demo-twin"
 
@@ -457,9 +457,9 @@ async def main():
     - Persona       → rune.artifacts (persona_history.json)
     - Sessions      → rune.sessions (checkpoint/resume)
 
-  In production, swap Rune.builder().mock_backend() for:
-    Rune.local()                 → file-based persistence
-    Rune.testnet(key="0x...")    → BSC + Greenfield (verifiable)
+  In production, swap nexus_core.builder().mock_backend() for:
+    nexus_core.local()                 → file-based persistence
+    nexus_core.testnet(key="0x...")    → BSC + Greenfield (verifiable)
 
   The twin evolves with every conversation. No retraining needed.
     """)

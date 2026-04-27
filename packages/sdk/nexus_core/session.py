@@ -361,7 +361,7 @@ class BNBChainSessionService(BaseSessionService):
                         session.state["_recalled_memories"] = recalled
             except Exception as e:
                 import logging
-                logging.getLogger("rune.session").warning(
+                logging.getLogger("nexus_core.session").warning(
                     "Auto-recall failed for session %s: %s", session_id, e)
 
         print(f"  [SDK] Session loaded from chain: {session_id} ({len(session.events)} events)")
@@ -437,7 +437,7 @@ class BNBChainSessionService(BaseSessionService):
                 )
             except Exception as e:
                 import logging
-                logging.getLogger("rune.session").warning(
+                logging.getLogger("nexus_core.session").warning(
                     "Auto-memorize failed for session %s: %s", session.id, e)
 
         return event

@@ -1,12 +1,24 @@
 """
-Rune Nexus — Self-Evolving AI Avatar on BNBChain.
+Nexus — self-evolving Digital Twin layer for the BNBChain agent platform.
 
-Built on top of the Rune Protocol SDK (bnbchain-agent-sdk).
+Built on top of :mod:`nexus_core` (the SDK). Nexus adds the
+agent runtime: ``DigitalTwin`` (compactor + chat loop + memory
+evolution + MCP-aware tool registry) on top of the deterministic
+projection memory primitives that live in the SDK.
 
     from nexus import DigitalTwin
 
     twin = await DigitalTwin.create("my-twin", llm_api_key="AIza...")
     await twin.chat("Help me plan a trip to Tokyo")
+
+Phase E note — only :class:`ExtendedToolRegistry` is genuinely
+Nexus-specific. The other names below (``BaseTool``, ``ToolResult``,
+``ToolCall``, ``ToolRegistry``, ``MCPManager``, ``MCPServerConfig``,
+``SkillManager``) are convenience re-exports from
+:mod:`nexus_core` so callers don't have to remember the package
+split. The submodule shims (``nexus.tools.web_search``,
+``nexus.skills.manager``, ``nexus.mcp.client``) were tombstoned —
+import those directly from ``nexus_core.*``.
 """
 
 from .twin import DigitalTwin

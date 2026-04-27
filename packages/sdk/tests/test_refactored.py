@@ -5,7 +5,7 @@ Tests cover all layers:
   1. MockBackend (Strategy)
   2. LocalBackend (Strategy)
   3. Provider implementations (Session, Memory, Artifact, Task)
-  4. Builder + Facade (Rune.local, Rune.builder)
+  4. Builder + Facade (nexus_core.local, nexus_core.builder)
   5. Framework adapters (ADK, LangGraph, CrewAI)
   6. Full integration workflow
   7. AdapterRegistry
@@ -19,8 +19,8 @@ import pytest
 from nexus_core.core.models import Checkpoint, MemoryEntry, Artifact
 from nexus_core.core.backend import StorageBackend
 from nexus_core.core.providers import (
-    RuneProvider, RuneSessionProvider, RuneMemoryProvider,
-    RuneArtifactProvider, RuneTaskProvider,
+    AgentRuntime, SessionProvider, MemoryProvider,
+    ArtifactProvider, TaskProvider,
 )
 from nexus_core.core.flush import FlushPolicy, FlushBuffer, WriteAheadLog
 from nexus_core.backends.mock import MockBackend
@@ -29,7 +29,8 @@ from nexus_core.providers.session import SessionProviderImpl
 from nexus_core.providers.memory import MemoryProviderImpl
 from nexus_core.providers.artifact import ArtifactProviderImpl
 from nexus_core.providers.task import TaskProviderImpl
-from nexus_core.builder import Rune, RuneBuilder
+import nexus_core
+from nexus_core.builder import Builder
 from nexus_core.adapters.registry import AdapterRegistry
 
 
@@ -401,37 +402,37 @@ class TestTaskProvider:
 
 class TestBuilder:
     def test_rune_local(self, tmp_path):
-        rune = Rune.local(base_dir=str(tmp_path / "test_local"))
-        assert isinstance(rune, RuneProvider)
-        assert isinstance(rune.sessions, RuneSessionProvider)
-        assert isinstance(rune.memory, RuneMemoryProvider)
-        assert isinstance(rune.artifacts, RuneArtifactProvider)
-        assert isinstance(rune.tasks, RuneTaskProvider)
+        rune = nexus_core.local(base_dir=str(tmp_path / "test_local"))
+        assert isinstance(rune, AgentRuntime)
+        assert isinstance(rune.sessions, SessionProvider)
+        assert isinstance(rune.memory, MemoryProvider)
+        assert isinstance(rune.artifacts, ArtifactProvider)
+        assert isinstance(rune.tasks, TaskProvider)
 
     def test_builder_mock(self):
-        rune = Rune.builder().mock_backend().build()
-        assert isinstance(rune, RuneProvider)
+        rune = nexus_core.builder().mock_backend().build()
+        assert isinstance(rune, AgentRuntime)
 
     def test_builder_chain(self):
         rune = (
-            Rune.builder()
+            nexus_core.builder()
             .mock_backend()
             .flush_policy(FlushPolicy.sync_every())
             .runtime_id("test-runtime")
             .build()
         )
-        assert isinstance(rune, RuneProvider)
+        assert isinstance(rune, AgentRuntime)
 
     def test_builder_default_backend(self, tmp_path):
         # When no backend set, defaults to LocalBackend
         os.chdir(tmp_path)
-        rune = Rune.builder().build()
-        assert isinstance(rune, RuneProvider)
+        rune = nexus_core.builder().build()
+        assert isinstance(rune, AgentRuntime)
 
     @pytest.mark.asyncio
     async def test_full_workflow(self):
         """Builder → save checkpoint → add memory → save artifact → load all."""
-        rune = Rune.builder().mock_backend().build()
+        rune = nexus_core.builder().mock_backend().build()
 
         # Session
         cp = Checkpoint(agent_id="a1", thread_id="t1", state={"step": 1})
@@ -685,7 +686,7 @@ class TestFlushPolicy:
 class TestContextManager:
     @pytest.mark.asyncio
     async def test_async_context_manager(self):
-        async with Rune.builder().mock_backend().build() as rune:
+        async with nexus_core.builder().mock_backend().build() as rune:
             cp = Checkpoint(agent_id="a1", thread_id="t1", state={"x": 1})
             await rune.sessions.save_checkpoint(cp)
             loaded = await rune.sessions.load_checkpoint("a1", "t1")

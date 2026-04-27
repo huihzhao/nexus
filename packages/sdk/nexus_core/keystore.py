@@ -9,10 +9,10 @@ a unified interface for:
   - Querying agent identity and metadata
 
 Usage:
-    from nexus_core.keystore import RuneKeystore
+    from nexus_core.keystore import Keystore
 
     # Create a new wallet + register an agent in one call
-    ks = RuneKeystore(password="my-secret", network="bsc-testnet")
+    ks = Keystore(password="my-secret", network="bsc-testnet")
     agent = ks.register(
         name="my-defi-agent",
         description="Analyzes DeFi yield opportunities",
@@ -21,7 +21,7 @@ Usage:
     print(agent["agentId"])  # ERC-721 tokenId
 
     # Later: reload the same wallet
-    ks = RuneKeystore(password="my-secret", address="0x1234...")
+    ks = Keystore(password="my-secret", address="0x1234...")
     info = ks.get_agent(agent_id=agent["agentId"])
 """
 
@@ -30,10 +30,10 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-logger = logging.getLogger("rune.keystore")
+logger = logging.getLogger("nexus_core.keystore")
 
 
-class RuneKeystore:
+class Keystore:
     """
     Unified wallet + agent identity manager for Rune Protocol.
 
@@ -303,7 +303,7 @@ class RuneKeystore:
         self,
         agent_state_address: Optional[str] = None,
         task_manager_address: Optional[str] = None,
-        greenfield_bucket: str = "rune-agent-state",
+        greenfield_bucket: str = "nexus-agent-state",
     ):
         """
         Create a StateManager pre-configured with this keystore's wallet.
@@ -371,6 +371,6 @@ class RuneKeystore:
 
     def __repr__(self) -> str:
         return (
-            f"RuneKeystore(address={self.address}, "
+            f"Keystore(address={self.address}, "
             f"source={self.source}, network={self._network})"
         )

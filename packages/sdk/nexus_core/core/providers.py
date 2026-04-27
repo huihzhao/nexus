@@ -1,21 +1,21 @@
 """
-Rune Protocol — Provider ABCs + RuneProvider Facade.
+Rune Protocol — Provider ABCs + AgentRuntime Facade.
 
 Provider ABCs define WHAT operations are available (domain logic).
 They depend on StorageBackend for HOW data is stored.
 
-    RuneSessionProvider   — checkpoint / resume / crash recovery
-    RuneMemoryProvider    — cross-session knowledge persistence
-    RuneArtifactProvider  — versioned output storage
-    RuneTaskProvider      — task lifecycle tracking (A2A)
-    RuneProvider          — Facade bundling all four providers
+    SessionProvider   — checkpoint / resume / crash recovery
+    MemoryProvider    — cross-session knowledge persistence
+    ArtifactProvider  — versioned output storage
+    TaskProvider      — task lifecycle tracking (A2A)
+    AgentRuntime          — Facade bundling all four providers
 
 Framework adapters (ADK, LangGraph, CrewAI) consume these interfaces.
 They never see StorageBackend directly.
 
 Design:
     - Provider ABCs = Template Method (define the contract)
-    - RuneProvider  = Facade (single entry point for users)
+    - AgentRuntime  = Facade (single entry point for users)
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from .models import (
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class RuneSessionProvider(ABC):
+class SessionProvider(ABC):
     """
     Framework-agnostic session/checkpoint persistence.
 
@@ -90,7 +90,7 @@ class RuneSessionProvider(ABC):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class RuneMemoryProvider(ABC):
+class MemoryProvider(ABC):
     """
     Framework-agnostic long-term memory persistence.
 
@@ -257,7 +257,7 @@ class RuneMemoryProvider(ABC):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class RuneArtifactProvider(ABC):
+class ArtifactProvider(ABC):
     """
     Framework-agnostic artifact (versioned output) persistence.
 
@@ -337,7 +337,7 @@ class RuneArtifactProvider(ABC):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class RuneTaskProvider(ABC):
+class TaskProvider(ABC):
     """
     Framework-agnostic task lifecycle tracking.
 
@@ -378,7 +378,7 @@ class RuneTaskProvider(ABC):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class RuneImpressionProvider(ABC):
+class ImpressionProvider(ABC):
     """
     Framework-agnostic impression persistence (Social Protocol).
 
@@ -468,11 +468,11 @@ class RuneImpressionProvider(ABC):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Facade: RuneProvider
+# Facade: AgentRuntime
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class RuneProvider:
+class AgentRuntime:
     """
     Facade: the single object users interact with.
 
@@ -480,7 +480,7 @@ class RuneProvider:
     No internal implementation details are exposed.
 
     Usage:
-        rune = Rune.local()
+        rune = nexus_core.local()
 
         await rune.sessions.save_checkpoint(checkpoint)
         entries = await rune.memory.search("revenue trends", agent_id="my-agent")
@@ -490,18 +490,18 @@ class RuneProvider:
 
     def __init__(
         self,
-        sessions: RuneSessionProvider,
-        memory: RuneMemoryProvider,
-        artifacts: RuneArtifactProvider,
-        tasks: RuneTaskProvider,
-        impressions: Optional[RuneImpressionProvider] = None,
+        sessions: SessionProvider,
+        memory: MemoryProvider,
+        artifacts: ArtifactProvider,
+        tasks: TaskProvider,
+        impressions: Optional[ImpressionProvider] = None,
         backend: Optional[Any] = None,
     ):
-        self.sessions: RuneSessionProvider = sessions
-        self.memory: RuneMemoryProvider = memory
-        self.artifacts: RuneArtifactProvider = artifacts
-        self.tasks: RuneTaskProvider = tasks
-        self.impressions: Optional[RuneImpressionProvider] = impressions
+        self.sessions: SessionProvider = sessions
+        self.memory: MemoryProvider = memory
+        self.artifacts: ArtifactProvider = artifacts
+        self.tasks: TaskProvider = tasks
+        self.impressions: Optional[ImpressionProvider] = impressions
         self._backend = backend  # held for lifecycle (close/flush)
 
     async def close(self) -> None:
@@ -513,7 +513,7 @@ class RuneProvider:
         if self._backend is not None and hasattr(self._backend, "close"):
             await self._backend.close()
 
-    async def __aenter__(self) -> "RuneProvider":
+    async def __aenter__(self) -> "AgentRuntime":
         return self
 
     async def __aexit__(self, *args) -> None:

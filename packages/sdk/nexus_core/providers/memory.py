@@ -1,5 +1,5 @@
 """
-MemoryProviderImpl — concrete RuneMemoryProvider backed by StorageBackend.
+MemoryProviderImpl — concrete MemoryProvider backed by StorageBackend.
 
 Domain logic:
   - Local semantic search (TF-IDF based, no LLM required)
@@ -24,12 +24,12 @@ from typing import Optional
 
 from ..core.backend import StorageBackend
 from ..core.models import MemoryCompact, MemoryEntry
-from ..core.providers import RuneMemoryProvider
+from ..core.providers import MemoryProvider
 
 logger = logging.getLogger(__name__)
 
 
-class MemoryProviderImpl(RuneMemoryProvider):
+class MemoryProviderImpl(MemoryProvider):
     """
     Concrete memory provider with local semantic search.
 

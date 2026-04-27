@@ -15,7 +15,7 @@ from typing import Optional
 
 from ..core.backend import StorageBackend
 
-logger = logging.getLogger("rune.backend.local")
+logger = logging.getLogger("nexus_core.backend.local")
 
 
 class LocalBackend(StorageBackend):
@@ -34,7 +34,7 @@ class LocalBackend(StorageBackend):
             └── anchors.json
     """
 
-    def __init__(self, base_dir: str = ".rune_state"):
+    def __init__(self, base_dir: str = ".nexus_state"):
         self._base_dir = Path(base_dir)
         self._data_dir = self._base_dir / "data"
         self._chain_dir = self._base_dir / "chain"

@@ -1,49 +1,143 @@
-# Python
+# ─── Secrets / env (NEVER commit) ────────────────────────────────────
+# Real keys go in .env (per package). Only .env.example is committed.
+.env
+.env.local
+.env.production
+.env.*.local
+*.pem
+*.key
+keystore.json
+wallet.json
+mnemonic.txt
+.secrets/
+
+# ─── Python ──────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+*$py.class
+*.so
+.Python
+*.egg
 *.egg-info/
 dist/
 build/
+develop-eggs/
+eggs/
+.eggs/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual envs
 .venv/
 venv/
-*.egg
-.pytest_cache/
+env/
+ENV/
 
-# .NET
+# Test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ─── .NET / C# (Avalonia desktop) ────────────────────────────────────
 bin/
 obj/
 *.user
 *.suo
+*.userosscache
+*.sln.docstates
 .vs/
+*.sln.DotSettings.user
+TestResults/
+*.coverage
+*.coveragexml
 
-# Node
+# ─── Node (Greenfield ops scripts under packages/sdk/scripts/) ───────
 node_modules/
 package-lock.json
+yarn.lock
+pnpm-lock.yaml
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# IDE
+# ─── IDE / editor ────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
-*.sln.DotSettings.user
+*.swo
+*~
+.project
+.classpath
+.settings/
 
-# OS
+# ─── OS junk ─────────────────────────────────────────────────────────
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+desktop.ini
 
-# Env & secrets
-.env
-.env.local
-.env.production
-
-# Runtime state (transient, regenerated on startup)
+# ─── Runtime state (regenerated on startup, sometimes contains user data) ─
+# Server's per-user twin EventLog SQLite + curated memory + ABC contract state
+.nexus_server/
+~/.nexus_server/                     # belt-and-braces; user-specific
+# Server-local dev DB / log
+nexus_server.db
+nexus_server.db-journal
+nexus_server.db-wal
+nexus_server.db-shm
+nexus_server.log
+# SDK/Nexus per-twin runtime caches (default base_dir variants)
+.nexus/
+.nexus_*/
+.nexus_state/
+.nexus_cache/
+.nexus_demo/
+# Legacy "rune" runtime caches (pre-Phase G — wipe on sight)
 .rune_*/
-*.log
+.rune/
 
-# Data (local dev databases)
+# Generic SQLite spill files
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 
-# Hardhat
+# Logs
+*.log
+logs/
+
+# ─── Hardhat / Solidity (if contracts/ ever lands here) ──────────────
 contracts/cache/
 contracts/artifacts/
+contracts/typechain/
+contracts/typechain-types/
+
+# ─── Misc temp / scratch ─────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
+*~
+.test_*
+.git_ignored_*
+_attic/
+scratch/
+TODO.local.md

@@ -13,7 +13,7 @@ What the new dev needs to know:
 - **Passkey registration** runs through `/passkey` (the HTML page) which talks to `/api/v1/auth/register/start` and `/api/v1/auth/register/finish`. After success the server hands back a JWT; subsequent requests carry it as `Authorization: Bearer ...`.
 - **Login** is the symmetric flow: `/api/v1/auth/login/start` + `/api/v1/auth/login/finish`.
 - `get_current_user` is the FastAPI dependency every authenticated route uses. It verifies the JWT and returns `user_id` (UUID).
-- The `users` table schema lives in `rune_server.database`; this module reads/writes through it.
+- The `users` table schema lives in `nexus_server.database`; this module reads/writes through it.
 
 What's NOT in here:
 

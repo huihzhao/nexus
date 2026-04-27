@@ -12,8 +12,8 @@ import os
 import time
 import pytest
 
+import nexus_core
 from nexus_core import (
-    Rune,
     Impression,
     ImpressionDimensions,
     MockBackend,
@@ -33,7 +33,7 @@ def backend():
 
 @pytest.fixture
 def rune():
-    return Rune.builder().mock_backend().build()
+    return nexus_core.builder().mock_backend().build()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -476,15 +476,15 @@ class TestBug17_GracefulShutdown:
         assert "timeout" in source
 
     def test_rune_provider_holds_backend_ref(self):
-        """RuneProvider should hold a backend reference for lifecycle."""
-        rune = Rune.builder().mock_backend().build()
+        """AgentRuntime should hold a backend reference for lifecycle."""
+        rune = nexus_core.builder().mock_backend().build()
         assert hasattr(rune, "_backend")
         assert rune._backend is not None
 
     @pytest.mark.asyncio
     async def test_rune_provider_close_calls_backend(self):
-        """RuneProvider.close() should call backend.close()."""
-        rune = Rune.builder().mock_backend().build()
+        """AgentRuntime.close() should call backend.close()."""
+        rune = nexus_core.builder().mock_backend().build()
         # MockBackend.close() is a no-op but should not crash
         await rune.close()
 

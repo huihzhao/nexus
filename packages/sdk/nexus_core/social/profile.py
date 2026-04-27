@@ -16,7 +16,7 @@ from typing import Optional
 
 from ..core.backend import StorageBackend
 from ..core.models import AgentProfile
-from ..core.providers import RuneArtifactProvider
+from ..core.providers import ArtifactProvider
 
 
 class ProfileManager:
@@ -44,7 +44,7 @@ class ProfileManager:
     def __init__(
         self,
         backend: StorageBackend,
-        artifacts: RuneArtifactProvider,
+        artifacts: ArtifactProvider,
     ):
         self._backend = backend
         self._artifacts = artifacts

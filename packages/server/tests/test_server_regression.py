@@ -567,16 +567,16 @@ class TestToolLoop:
 
         cfg = cfg_mod.get_config()
         old_pk = cfg.SERVER_PRIVATE_KEY
-        old_rpc = cfg.RUNE_TESTNET_RPC
+        old_rpc = cfg.NEXUS_TESTNET_RPC
         cfg.SERVER_PRIVATE_KEY = "0x" + "a" * 64
-        cfg.RUNE_TESTNET_RPC = "https://example/testnet"
+        cfg.NEXUS_TESTNET_RPC = "https://example/testnet"
         twin_manager.config = cfg
         try:
             kwargs = twin_manager._resolve_chain_kwargs(user_id)
             assert kwargs == {}, kwargs
         finally:
             cfg.SERVER_PRIVATE_KEY = old_pk
-            cfg.RUNE_TESTNET_RPC = old_rpc
+            cfg.NEXUS_TESTNET_RPC = old_rpc
             twin_manager.config = cfg
 
     def test_twin_bootstrap_chain_identity_auto_registers(self, client):
@@ -612,10 +612,10 @@ class TestToolLoop:
         cfg = cfg_mod.get_config()
         old_pk = cfg.SERVER_PRIVATE_KEY
         old_chainrpc = cfg.CHAIN_RPC_URL
-        old_rpc = cfg.RUNE_TESTNET_RPC
+        old_rpc = cfg.NEXUS_TESTNET_RPC
         cfg.SERVER_PRIVATE_KEY = "0x" + "c" * 64
         cfg.CHAIN_RPC_URL = None
-        cfg.RUNE_TESTNET_RPC = "https://example/testnet"
+        cfg.NEXUS_TESTNET_RPC = "https://example/testnet"
         twin_manager.config = cfg
         try:
             # First call: no cached id → registers, persists, returns id
@@ -639,7 +639,7 @@ class TestToolLoop:
             cp._chain_client_test_override = None
             cfg.SERVER_PRIVATE_KEY = old_pk
             cfg.CHAIN_RPC_URL = old_chainrpc
-            cfg.RUNE_TESTNET_RPC = old_rpc
+            cfg.NEXUS_TESTNET_RPC = old_rpc
             twin_manager.config = cfg
 
     def test_twin_chain_kwargs_built_when_registered(self, client):
@@ -673,22 +673,22 @@ class TestToolLoop:
 
         cfg = cfg_mod.get_config()
         old_pk = cfg.SERVER_PRIVATE_KEY
-        old_rpc = cfg.RUNE_TESTNET_RPC
-        old_state = cfg.RUNE_TESTNET_AGENT_STATE_ADDRESS
-        old_idreg = cfg.RUNE_TESTNET_IDENTITY_REGISTRY
-        old_tm = cfg.RUNE_TESTNET_TASK_MANAGER_ADDRESS
-        old_net = cfg.RUNE_NETWORK
+        old_rpc = cfg.NEXUS_TESTNET_RPC
+        old_state = cfg.NEXUS_TESTNET_AGENT_STATE_ADDRESS
+        old_idreg = cfg.NEXUS_TESTNET_IDENTITY_REGISTRY
+        old_tm = cfg.NEXUS_TESTNET_TASK_MANAGER_ADDRESS
+        old_net = cfg.NEXUS_NETWORK
         old_chainrpc = cfg.CHAIN_RPC_URL
 
         cfg.SERVER_PRIVATE_KEY = "0x" + "b" * 64
-        cfg.RUNE_NETWORK = "bsc-testnet"
+        cfg.NEXUS_NETWORK = "bsc-testnet"
         # ``chain_active_rpc`` prefers CHAIN_RPC_URL when set; clear it so
-        # the property falls through to RUNE_TESTNET_RPC for this test.
+        # the property falls through to NEXUS_TESTNET_RPC for this test.
         cfg.CHAIN_RPC_URL = None
-        cfg.RUNE_TESTNET_RPC = "https://example/testnet"
-        cfg.RUNE_TESTNET_AGENT_STATE_ADDRESS = "0xAS"
-        cfg.RUNE_TESTNET_IDENTITY_REGISTRY = "0xIR"
-        cfg.RUNE_TESTNET_TASK_MANAGER_ADDRESS = "0xTM"
+        cfg.NEXUS_TESTNET_RPC = "https://example/testnet"
+        cfg.NEXUS_TESTNET_AGENT_STATE_ADDRESS = "0xAS"
+        cfg.NEXUS_TESTNET_IDENTITY_REGISTRY = "0xIR"
+        cfg.NEXUS_TESTNET_TASK_MANAGER_ADDRESS = "0xTM"
         twin_manager.config = cfg
         try:
             kwargs = twin_manager._resolve_chain_kwargs(user_id)
@@ -701,14 +701,14 @@ class TestToolLoop:
             assert kwargs["task_manager_address"] == "0xTM"
             # **The** key invariant: per-agent bucket, not shared.
             assert kwargs["greenfield_bucket"] == bucket_for_agent(TOKEN_ID)
-            assert "rune-agent-" in kwargs["greenfield_bucket"]
+            assert "nexus-agent-" in kwargs["greenfield_bucket"]
         finally:
             cfg.SERVER_PRIVATE_KEY = old_pk
-            cfg.RUNE_TESTNET_RPC = old_rpc
-            cfg.RUNE_TESTNET_AGENT_STATE_ADDRESS = old_state
-            cfg.RUNE_TESTNET_IDENTITY_REGISTRY = old_idreg
-            cfg.RUNE_TESTNET_TASK_MANAGER_ADDRESS = old_tm
-            cfg.RUNE_NETWORK = old_net
+            cfg.NEXUS_TESTNET_RPC = old_rpc
+            cfg.NEXUS_TESTNET_AGENT_STATE_ADDRESS = old_state
+            cfg.NEXUS_TESTNET_IDENTITY_REGISTRY = old_idreg
+            cfg.NEXUS_TESTNET_TASK_MANAGER_ADDRESS = old_tm
+            cfg.NEXUS_NETWORK = old_net
             cfg.CHAIN_RPC_URL = old_chainrpc
             twin_manager.config = cfg
 
@@ -1066,7 +1066,7 @@ class TestLLMChatAttachments:
 
 class TestChainProxy:
     """Verify chain_proxy falls back to mock when env is missing AND
-    actually uses RuneChainClient when one is injected."""
+    actually uses BSCClient when one is injected."""
 
     def _get_token_and_user(self, client):
         resp = client.post("/api/v1/auth/register", json={"display_name": "ChainUser"})
@@ -1476,8 +1476,8 @@ class TestSyncAnchor:
 
         twin_manager.install_chain_activity_handler()
         try:
-            chain_log = logging.getLogger("rune.backend.chain")
-            gf_log = logging.getLogger("rune.greenfield")
+            chain_log = logging.getLogger("nexus_core.backend.chain")
+            gf_log = logging.getLogger("nexus_core.greenfield")
 
             # 1. Successful BSC anchor — handler should write status=ok row
             chain_log.warning(
@@ -1727,7 +1727,7 @@ class TestSyncAnchor:
 class TestAnchorRetryDaemonRetired:
     """Phase B tombstone: the periodic anchor retry daemon, its backoff
     schedule, ``_claim_retry_candidates`` / ``_retry_one`` / ``retry_daemon``
-    coroutines, and the ``RUNE_ENABLE_RETRY_DAEMON`` env flag are all
+    coroutines, and the ``NEXUS_ENABLE_RETRY_DAEMON`` env flag are all
     gone. Pre-Phase-B these were exercised by ``test_daemon_recovers_failed_anchor``
     and ``test_daemon_marks_permanent_after_exhausting_retries`` —
     deleted along with the implementation. Verify the symbols stay

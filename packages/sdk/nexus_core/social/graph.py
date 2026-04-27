@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Optional
 
-from ..core.providers import RuneImpressionProvider
+from ..core.providers import ImpressionProvider
 from ..core.models import AgentProfile, ImpressionSummary, NetworkStats
 
 
@@ -46,7 +46,7 @@ class SocialGraph:
 
     def __init__(
         self,
-        impressions: RuneImpressionProvider,
+        impressions: ImpressionProvider,
         trust_decay: float = 0.7,   # per-hop decay for transitive trust
     ):
         self._impressions = impressions

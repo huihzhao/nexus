@@ -3,7 +3,7 @@ LangGraph Adapter — bridges LangGraph's BaseCheckpointSaver to Rune Providers.
 
 LangGraph uses a checkpoint-based persistence model where graph state is
 saved at every step. This adapter implements BaseCheckpointSaver using
-Rune's RuneSessionProvider.
+Rune's SessionProvider.
 
 Usage:
     from nexus_core.rune_providers import create_provider
@@ -35,7 +35,7 @@ import uuid
 from typing import Any, AsyncIterator, Iterator, Optional, Sequence
 
 from ..core.models import Checkpoint
-from ..core.providers import RuneSessionProvider
+from ..core.providers import SessionProvider
 from .registry import AdapterRegistry
 
 
@@ -44,14 +44,14 @@ class RuneCheckpointer:
     LangGraph-compatible checkpoint saver backed by Rune.
 
     This implements the LangGraph BaseCheckpointSaver protocol using
-    Rune's RuneSessionProvider. Install langgraph to use the full
+    Rune's SessionProvider. Install langgraph to use the full
     typed interface; this class works without it as a duck-type
     implementation.
 
     Architecture:
         LangGraph graph.invoke()
             → RuneCheckpointer.put(config, checkpoint)
-                → RuneSessionProvider.save_checkpoint()
+                → SessionProvider.save_checkpoint()
                     → Greenfield (full state) + BSC (state root hash)
 
     The checkpoint includes the full graph state at each step,
@@ -64,7 +64,7 @@ class RuneCheckpointer:
 
     def __init__(
         self,
-        session_provider: RuneSessionProvider,
+        session_provider: SessionProvider,
         agent_id: str = "langgraph-agent",
     ):
         """

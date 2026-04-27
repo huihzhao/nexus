@@ -4,8 +4,8 @@ What's in here:
 
 | File | Purpose |
 |---|---|
-| `manager.py` | Facade for `TwinManager` — lazy create per user, idle eviction, `_resolve_chain_kwargs` decision logic, `_ChainActivityLogHandler` (Bug 3 visibility), `bootstrap_chain_identity` (chain registration). Real code at `rune_server.twin_manager`. |
-| `event_views.py` | Facade for read-only views over each user's twin EventLog SQLite. Used by `views/routes.py` to serve `/agent/{messages,memories,timeline}` without instantiating a twin. Real code at `rune_server.twin_event_log`. |
+| `manager.py` | Facade for `TwinManager` — lazy create per user, idle eviction, `_resolve_chain_kwargs` decision logic, `_ChainActivityLogHandler` (Bug 3 visibility), `bootstrap_chain_identity` (chain registration). Real code at `nexus_server.twin_manager`. |
+| `event_views.py` | Facade for read-only views over each user's twin EventLog SQLite. Used by `views/routes.py` to serve `/agent/{messages,memories,timeline}` without instantiating a twin. Real code at `nexus_server.twin_event_log`. |
 | `__init__.py` | Re-exports `manager`, `event_views`, plus the most-used helpers (`get_twin`, `bootstrap_chain_identity`, `install_chain_activity_handler`, `start_reaper`, `shutdown_all`). |
 
 What the new dev needs to know:

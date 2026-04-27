@@ -1,20 +1,21 @@
-"""Tool Use framework — gives the Digital Twin ability to interact with the external world.
+"""Nexus-specific tool extensions.
 
-Core classes and built-in tools live in the SDK.
-Nexus adds the MCP-aware ExtendedToolRegistry.
+Phase E note — the canonical home for the tool framework is
+:mod:`nexus_core.tools` (``BaseTool``, ``ToolResult``, ``ToolCall``,
+``ToolRegistry``, ``WebSearchTool``, ``URLReaderTool``). Import those
+directly from the SDK:
+
+    from nexus_core.tools import BaseTool, ToolResult, ToolRegistry
+    from nexus_core.tools import WebSearchTool, URLReaderTool
+
+This package now exists *only* to host
+:class:`ExtendedToolRegistry`, the MCP-aware subclass that
+:class:`nexus.DigitalTwin` uses. Nothing else is re-exported — the
+old shim that pulled SDK names through here was removed because it
+inverted the dependency story (Nexus depends on Core, not the
+reverse) and made it ambiguous where built-in tools lived.
 """
 
-# Re-export from SDK (canonical location)
-from nexus_core.tools import BaseTool, ToolResult, ToolCall, ToolRegistry
-from nexus_core.tools import WebSearchTool, URLReaderTool
-from .base import ExtendedToolRegistry  # MCP + skill aware
+from .base import ExtendedToolRegistry
 
-__all__ = [
-    "BaseTool",
-    "ToolResult",
-    "ToolCall",
-    "ToolRegistry",
-    "ExtendedToolRegistry",
-    "WebSearchTool",
-    "URLReaderTool",
-]
+__all__ = ["ExtendedToolRegistry"]

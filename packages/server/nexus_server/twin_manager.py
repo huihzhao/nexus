@@ -183,7 +183,7 @@ def bootstrap_chain_identity(user_id: str) -> Optional[int]:
     if not config.SERVER_PRIVATE_KEY or not config.chain_active_rpc:
         return None
 
-    # Lazy import: chain_proxy pulls in web3 / RuneChainClient and we
+    # Lazy import: chain_proxy pulls in web3 / BSCClient and we
     # don't want to force that on local-mode setups.
     try:
         from nexus_server import chain_proxy as cp
@@ -307,7 +307,7 @@ def _resolve_chain_kwargs(user_id: str) -> dict:
     if not rpc:
         logger.debug(
             "Twin local mode for %s: no RPC configured for %s",
-            user_id, config.RUNE_NETWORK,
+            user_id, config.NEXUS_NETWORK,
         )
         return {}
     token_id = _read_chain_agent_id(user_id)
@@ -336,7 +336,7 @@ def _resolve_chain_kwargs(user_id: str) -> dict:
         )
         return {}
 
-    net_short = _network_short(config.RUNE_NETWORK)
+    net_short = _network_short(config.NEXUS_NETWORK)
     net_prefix = "MAINNET" if net_short == "mainnet" else "TESTNET"
 
     return {
@@ -344,13 +344,13 @@ def _resolve_chain_kwargs(user_id: str) -> dict:
         "network": net_short,
         "rpc_url": rpc or "",
         "agent_state_address": (
-            getattr(config, f"RUNE_{net_prefix}_AGENT_STATE_ADDRESS", "") or ""
+            getattr(config, f"NEXUS_{net_prefix}_AGENT_STATE_ADDRESS", "") or ""
         ),
         "task_manager_address": (
-            getattr(config, f"RUNE_{net_prefix}_TASK_MANAGER_ADDRESS", "") or ""
+            getattr(config, f"NEXUS_{net_prefix}_TASK_MANAGER_ADDRESS", "") or ""
         ),
         "identity_registry_address": (
-            getattr(config, f"RUNE_{net_prefix}_IDENTITY_REGISTRY", "") or ""
+            getattr(config, f"NEXUS_{net_prefix}_IDENTITY_REGISTRY", "") or ""
         ),
         "greenfield_bucket": bucket_for_agent(token_id),
     }
@@ -389,7 +389,7 @@ async def _create_twin(user_id: str):
         # pre-seeds its identity cache and skips the background
         # _register_identity task that would otherwise mint a second
         # ERC-8004 token. The token_id is implicit in the bucket name
-        # (rune-agent-{token_id}) so we recover it by reading the DB.
+        # (nexus-agent-{token_id}) so we recover it by reading the DB.
         cached_token_id = _read_chain_agent_id(user_id)
         if cached_token_id is not None:
             chain_kwargs["cached_agent_id"] = cached_token_id
@@ -623,7 +623,7 @@ class _ChainActivityLogHandler(logging.Handler):
         msg = record.getMessage()
         name = record.name
 
-        if name == "rune.backend.chain":
+        if name == "nexus_core.backend.chain":
             m = _RE_BSC_OK.search(msg)
             if m:
                 uid = _user_id_for_agent(m.group("agent"))
@@ -660,7 +660,7 @@ class _ChainActivityLogHandler(logging.Handler):
                     )
                 return
 
-        elif name == "rune.greenfield":
+        elif name == "nexus_core.greenfield":
             m = _RE_GF_FAIL.search(msg)
             if m and self._last_user:
                 _record_chain_event(
@@ -686,10 +686,10 @@ def install_chain_activity_handler() -> None:
     global _chain_log_handler
     if _chain_log_handler is not None:
         # Detach previous instance first so we don't double-write.
-        for name in ("rune.backend.chain", "rune.greenfield"):
+        for name in ("nexus_core.backend.chain", "nexus_core.greenfield"):
             logging.getLogger(name).removeHandler(_chain_log_handler)
     _chain_log_handler = _ChainActivityLogHandler()
-    for name in ("rune.backend.chain", "rune.greenfield"):
+    for name in ("nexus_core.backend.chain", "nexus_core.greenfield"):
         logging.getLogger(name).addHandler(_chain_log_handler)
     logger.info("Chain activity log handler installed (twin_chain_events)")
 
@@ -699,7 +699,7 @@ def uninstall_chain_activity_handler() -> None:
     global _chain_log_handler
     if _chain_log_handler is None:
         return
-    for name in ("rune.backend.chain", "rune.greenfield"):
+    for name in ("nexus_core.backend.chain", "nexus_core.greenfield"):
         logging.getLogger(name).removeHandler(_chain_log_handler)
     _chain_log_handler = None
 

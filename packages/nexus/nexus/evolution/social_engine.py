@@ -21,7 +21,7 @@ import time
 from typing import Any, Callable, Optional
 
 from nexus_core import (
-    RuneProvider,
+    AgentRuntime,
     GossipProtocol,
     ProfileManager,
     SocialGraph,
@@ -134,7 +134,7 @@ class SocialEngine:
 
     def __init__(
         self,
-        rune: RuneProvider,
+        rune: AgentRuntime,
         agent_id: str,
         llm_fn: Callable,
         agent_name: str = "Twin",

@@ -126,7 +126,7 @@ ORIGIN = os.environ.get("WEBAUTHN_ORIGIN", "http://localhost:8000")
 CFG = {}
 
 # ── User persistence ──
-USERS_FILE = PROJECT_ROOT / ".rune_twin_demo" / "users.json"
+USERS_FILE = PROJECT_ROOT / ".nexus_demo" / "users.json"
 
 
 def _save_users():
@@ -198,8 +198,8 @@ app = FastAPI(title="Rune Protocol — Digital Twin Demo")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # File storage directories
-UPLOAD_DIR = PROJECT_ROOT / ".rune_twin_demo" / "uploads"
-OUTPUT_DIR = PROJECT_ROOT / ".rune_twin_demo" / "outputs"
+UPLOAD_DIR = PROJECT_ROOT / ".nexus_demo" / "uploads"
+OUTPUT_DIR = PROJECT_ROOT / ".nexus_demo" / "outputs"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -480,7 +480,7 @@ async def create_twin(req: CreateRequest):
             llm_provider=CFG["provider"],
             llm_api_key=CFG["api_key"],
             llm_model=CFG.get("model", ""),
-            base_dir=str(PROJECT_ROOT / ".rune_twin_demo" / stable_agent_id),
+            base_dir=str(PROJECT_ROOT / ".nexus_demo" / stable_agent_id),
             # Tools
             enable_tools=True,  # Always enable — FileGenerator doesn't need API keys
             tavily_api_key=CFG.get("tavily_key", ""),
@@ -489,7 +489,7 @@ async def create_twin(req: CreateRequest):
             private_key=CFG.get("private_key", ""),
             network=CFG.get("network", "testnet"),
             rpc_url=CFG.get("rpc_url", ""),
-            greenfield_bucket=CFG.get("greenfield_bucket", "rune-agent-state"),
+            greenfield_bucket=CFG.get("greenfield_bucket", "nexus-agent-state"),
             identity_registry_address=CFG.get("identity_registry", ""),
             agent_state_address=CFG.get("agent_state_address", ""),
             task_manager_address=CFG.get("task_manager_address", ""),
@@ -1116,7 +1116,7 @@ def resolve_config(args):
         print(f"   Set GEMINI_API_KEY (or OPENAI_API_KEY) in .env or environment\n")
         sys.exit(1)
 
-    net = args.network or env("RUNE_NETWORK", "testnet")
+    net = args.network or env("NEXUS_NETWORK", "testnet")
     net_prefix = "MAINNET" if "mainnet" in net else "TESTNET"
 
     return {
@@ -1125,13 +1125,13 @@ def resolve_config(args):
         "model": args.model or env("TWIN_LLM_MODEL", ""),
         "name": env("TWIN_NAME", "Digital Twin"),
         "owner": env("TWIN_OWNER", ""),
-        "private_key": env("RUNE_PRIVATE_KEY", ""),
+        "private_key": env("NEXUS_PRIVATE_KEY", ""),
         "network": net,
-        "rpc_url": env(f"RUNE_{net_prefix}_RPC", ""),
-        "agent_state_address": env(f"RUNE_{net_prefix}_AGENT_STATE_ADDRESS", ""),
-        "task_manager_address": env(f"RUNE_{net_prefix}_TASK_MANAGER_ADDRESS", ""),
-        "identity_registry": env(f"RUNE_{net_prefix}_IDENTITY_REGISTRY", "") or env(f"RUNE_{net_prefix}_IDENTITY_REGISTRY_ADDRESS", ""),
-        "greenfield_bucket": env("RUNE_GREENFIELD_BUCKET", "rune-agent-state"),
+        "rpc_url": env(f"NEXUS_{net_prefix}_RPC", ""),
+        "agent_state_address": env(f"NEXUS_{net_prefix}_AGENT_STATE_ADDRESS", ""),
+        "task_manager_address": env(f"NEXUS_{net_prefix}_TASK_MANAGER_ADDRESS", ""),
+        "identity_registry": env(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY", "") or env(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY_ADDRESS", ""),
+        "greenfield_bucket": env("NEXUS_GREENFIELD_BUCKET", "nexus-agent-state"),
         "tavily_key": env("TAVILY_API_KEY", ""),
         "jina_key": env("JINA_API_KEY", ""),
     }
@@ -1145,7 +1145,7 @@ def main():
     parser.add_argument("--provider", default="", choices=["gemini", "openai", "anthropic", ""])
     parser.add_argument("--model", default="")
     parser.add_argument("--api-key", default="")
-    # Private key: env-only (RUNE_PRIVATE_KEY) — never pass on CLI for security
+    # Private key: env-only (NEXUS_PRIVATE_KEY) — never pass on CLI for security
     parser.add_argument("--network", default="", choices=["testnet", "mainnet", ""])
     args = parser.parse_args()
 
@@ -1175,7 +1175,7 @@ def main():
     print()
 
     # Console: INFO, File: DEBUG (captures everything for troubleshooting)
-    log_file = PROJECT_ROOT / ".rune_twin_demo" / "demo.log"
+    log_file = PROJECT_ROOT / ".nexus_demo" / "demo.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
@@ -1190,7 +1190,7 @@ def main():
     ))
     logging.getLogger().addHandler(file_handler)
     # Also capture SDK/Nexus internals
-    for name in ["nexus", "nexus_core", "rune.greenfield", "rune.backend.chain"]:
+    for name in ["nexus", "nexus_core", "nexus_core.greenfield", "nexus_core.backend.chain"]:
         logging.getLogger(name).setLevel(logging.DEBUG)
 
     logger.info("Log file: %s", log_file)

@@ -1,334 +1,123 @@
-# Quick Start Guide
+# nexus-server quickstart
 
-## Installation
+> The bigger picture (how server / nexus / SDK fit together, DPM,
+> ABC, identity flow) is in the root
+> [`README.md`](../../README.md) and
+> [`ARCHITECTURE.md`](../../ARCHITECTURE.md). This file is just
+> "get the server running locally and verify it works".
+
+## 1. Install
 
 ```bash
 cd packages/server
-pip install -e ".[llm]"
+pip install -e ".[dev]"
+# Optional: openai + anthropic providers
+pip install -e ".[llm-extra]"
 ```
 
-## Configuration
+## 2. Configure
 
-Create `.env` file in the server directory:
+Create `packages/server/.env`:
 
-```bash
-# Minimal setup for local development
-ENVIRONMENT=development
-SERVER_PORT=8001
-SERVER_SECRET=dev-secret
-
-# Required: Pick one LLM provider
-ANTHROPIC_API_KEY=sk-ant-...
-# OR
-OPENAI_API_KEY=sk-...
-# OR
-GEMINI_API_KEY=...
-
-# Optional: WebAuthn (adjust for your setup)
+```env
+SERVER_SECRET=local-jwt-secret-change-me
+GEMINI_API_KEY=AIza...
+DATABASE_URL=sqlite:///./nexus_server.db
 WEBAUTHN_RP_ID=localhost
-WEBAUTHN_ORIGIN=http://localhost:3000
+WEBAUTHN_ORIGIN=http://localhost:8001
 
-# Optional: Chain (for agent registration)
-# CHAIN_RPC_URL=https://bsc-dataseed.binance.org
-# SERVER_PRIVATE_KEY=0x...
+# Custodial chain mode (optional)
+SERVER_PRIVATE_KEY=0x...   # leave unset to disable chain writes
 ```
 
-## Run Server
+Network/contract addresses (BSC RPC, ERC-8004 contracts) are
+loaded from `packages/sdk/.env` automatically.
+
+## 3. Run
 
 ```bash
-# Development with auto-reload
-python -m rune_server.main --reload
-
-# Or using CLI
-rune-server --reload
-
-# Production
-rune-server --host 0.0.0.0 --port 8001
+python -m nexus_server.main --reload
+# or via the entry-point script:
+nexus-server --reload
 ```
 
-Server starts at `http://localhost:8001`
-
-## Test Health
+Server boots on `http://localhost:8001`. Health check:
 
 ```bash
 curl http://localhost:8001/health
 ```
 
-Response:
-```json
-{
-  "status": "healthy",
-  "timestamp": "2024-04-26T12:00:00Z",
-  "version": "0.1.0"
-}
-```
+## 4. Verify
 
-## Register & Login
-
-### Simple Registration
+Run the regression suite:
 
 ```bash
-curl -X POST http://localhost:8001/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"display_name": "Alice"}'
+pytest tests/                # 64 tests, ~3s
 ```
 
-Response:
-```json
-{
-  "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "jwt_token": "eyJhbGc...",
-  "created_at": "2024-04-26T12:00:00Z"
-}
-```
-
-Save the `jwt_token` for authenticated requests.
-
-### Login with User ID
+Quick smoke probe with curl (after registering a passkey via the
+`/passkey` browser flow and capturing the JWT):
 
 ```bash
-curl -X POST http://localhost:8001/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": "550e8400-e29b-41d4-a716-446655440000"}'
-```
+TOKEN="..."  # JWT from passkey login
 
-## Use Protected Endpoints
-
-All authenticated endpoints require: `Authorization: Bearer <jwt_token>`
-
-### Get Profile
-
-```bash
-curl -H "Authorization: Bearer eyJhbGc..." \
-  http://localhost:8001/api/v1/user/profile
-```
-
-### Update Profile
-
-```bash
-curl -X PUT http://localhost:8001/api/v1/user/profile \
-  -H "Authorization: Bearer eyJhbGc..." \
-  -H "Content-Type: application/json" \
-  -d '{"display_name": "Alice Updated"}'
-```
-
-## Chat with LLM
-
-```bash
+# Chat → routes through DigitalTwin
 curl -X POST http://localhost:8001/api/v1/llm/chat \
-  -H "Authorization: Bearer eyJhbGc..." \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "Hello, world!"}
-    ],
-    "system_prompt": "You are a helpful assistant",
-    "temperature": 0.7,
-    "max_tokens": 1024
-  }'
+  -d '{"messages":[{"role":"user","content":"hello"}]}'
+
+# Read views
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8001/api/v1/agent/state
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8001/api/v1/agent/timeline
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8001/api/v1/chain/me
 ```
 
-Response:
-```json
-{
-  "role": "assistant",
-  "content": "Hello! How can I help you today?",
-  "model": "claude-3-sonnet-20240229",
-  "stop_reason": "stop"
-}
-```
+## 5. Inspect data
 
-## Push Events (Sync)
+The auth / users SQLite is at `./nexus_server.db`:
 
 ```bash
-curl -X POST http://localhost:8001/api/v1/sync/push \
-  -H "Authorization: Bearer eyJhbGc..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "events": [
-      {
-        "event_type": "user_action",
-        "content": "{\"action\": \"click\", \"target\": \"button\"}",
-        "session_id": "session-123",
-        "metadata": {"timestamp": 1234567890}
-      }
-    ]
-  }'
+sqlite3 nexus_server.db ".tables"
+sqlite3 nexus_server.db "SELECT id, display_name, created_at FROM users;"
 ```
 
-Response:
-```json
-{
-  "assigned_sync_ids": [1],
-  "server_time": "2024-04-26T12:00:00Z"
-}
-```
-
-## Pull Events (Sync)
+Per-user twin EventLog SQLite is at
+`~/.nexus_server/twins/{user_id}/event_log/{agent_id}.db`
+(override with `NEXUS_TWIN_BASE_DIR`):
 
 ```bash
-curl -H "Authorization: Bearer eyJhbGc..." \
-  "http://localhost:8001/api/v1/sync/pull?after=0"
+sqlite3 ~/.nexus_server/twins/$UID/event_log/user-${UID:0:8}.db \
+  "SELECT seq, event_type, ts FROM events ORDER BY seq DESC LIMIT 20;"
 ```
 
-Response:
-```json
-{
-  "events": [
-    {
-      "sync_id": 1,
-      "event_type": "user_action",
-      "content": "{\"action\": \"click\", \"target\": \"button\"}",
-      "session_id": "session-123",
-      "metadata": {"timestamp": 1234567890},
-      "server_received_at": "2024-04-26T12:00:00Z"
-    }
-  ],
-  "latest_sync_id": 1
-}
-```
+> **Note** — Phase B retired the legacy server-side `sync_events`
+> mirror table; if you read older docs that reference it, they're
+> describing pre-S5 architecture. The twin's own EventLog is the
+> single source of truth now.
 
-## Register Agent (Chain)
+## 6. Common issues
 
-```bash
-curl -X POST http://localhost:8001/api/v1/chain/register-agent \
-  -H "Authorization: Bearer eyJhbGc..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_name": "My Agent",
-    "metadata": {"version": "1.0"}
-  }'
-```
+* **`ImportError: cannot import name 'sync_hub'`** — that module
+  is intentionally a tombstone (Phase B). Nothing should import
+  it; if your code does, switch to the relevant replacement
+  (`twin_event_log` for events, `twin_manager` for lifecycle,
+  `agent_state` for read views).
+* **`ImportError: nexus.skills was removed in Phase E`** —
+  re-export shims under `nexus.{tools,skills,mcp}` are gone;
+  import from `nexus_core.{tools,skills,mcp}` instead.
+* **DB locked / "disk I/O error"** — usually a leftover
+  `nexus_server.db` from a previous run; `rm nexus_server.db` and
+  restart (or set `DATABASE_URL` to a fresh path).
+* **Chain operations failing silently** — check `nexus_server.log`
+  for `nexus_core.backend.chain` / `nexus_core.greenfield`
+  warnings; chain writes fall back gracefully if
+  `SERVER_PRIVATE_KEY` isn't set.
 
-Response (development mode - no RPC configured):
-```json
-{
-  "agent_id": "123e4567-e89b-12d3-a456-426614174000",
-  "tx_hash": null,
-  "status": "pending"
-}
-```
+## Where to go next
 
-## WebAuthn Passkey Registration
-
-### Start Registration
-
-```bash
-curl -X POST http://localhost:8001/api/v1/auth/passkey/register/start \
-  -H "Content-Type: application/json" \
-  -d '{
-    "display_name": "Bob",
-    "user_agent": "Mozilla/5.0..."
-  }'
-```
-
-Response:
-```json
-{
-  "challenge": "...",
-  "user_id": "550e8400-e29b-41d4-a716-446655440001",
-  "rp_id": "localhost",
-  "rp_name": "Rune Protocol"
-}
-```
-
-### Finish Registration (requires WebAuthn credential from client)
-
-```bash
-curl -X POST http://localhost:8001/api/v1/auth/passkey/register/finish \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": "550e8400-e29b-41d4-a716-446655440001",
-    "display_name": "Bob",
-    "credential": {
-      "id": "...",
-      "type": "public-key",
-      "response": {...}
-    }
-  }'
-```
-
-## Database
-
-SQLite database is created automatically at `./rune_server.db`
-
-View tables:
-```bash
-sqlite3 rune_server.db ".tables"
-```
-
-Query users:
-```bash
-sqlite3 rune_server.db "SELECT id, display_name, created_at FROM users;"
-```
-
-Query events:
-```bash
-sqlite3 rune_server.db "SELECT sync_id, event_type, user_id FROM sync_events;"
-```
-
-## Rate Limiting
-
-Rate limits are enforced per user per endpoint:
-- LLM endpoints: 60 requests/minute
-- Other endpoints: 120 requests/minute
-
-When limit is exceeded:
-```json
-{
-  "error": "Rate limit exceeded",
-  "status_code": 429,
-  "timestamp": "2024-04-26T12:00:00Z"
-}
-```
-
-## Troubleshooting
-
-### Server won't start
-Check:
-- Port 8001 is available: `lsof -i :8001`
-- Dependencies installed: `pip install -e ".[llm]"`
-- Python 3.10+: `python --version`
-
-### LLM endpoints fail
-Check:
-- API key is set: `echo $ANTHROPIC_API_KEY`
-- API provider is configured in .env
-- Default provider matches available keys
-
-### WebAuthn fails
-Check:
-- `WEBAUTHN_RP_ID` matches your domain
-- `WEBAUTHN_ORIGIN` matches your frontend
-- Browser supports WebAuthn (Chrome, Firefox, Safari)
-
-### Database locked
-SQLite is single-writer. If getting "database is locked":
-- Kill other server processes
-- Delete `.db-wal` and `.db-shm` files
-- Restart server
-
-## Next Steps
-
-- Read [ARCHITECTURE.md](ARCHITECTURE.md) for design patterns
-- Check [README.md](README.md) for detailed API docs
-- Review module source code for implementation details
-- Write tests in `tests/` directory
-
-## Module Structure
-
-```
-rune_server/
-├── config.py          # Configuration from env vars
-├── database.py        # SQLite connection & schema
-├── auth.py            # JWT + WebAuthn routes
-├── llm_gateway.py     # LLM proxy routes
-├── sync_hub.py        # Event sync routes
-├── chain_proxy.py     # Chain operation routes
-├── user_profile.py    # Profile management routes
-├── middleware.py      # Rate limiting utilities
-├── main.py            # FastAPI app factory
-└── __init__.py        # Package exports
-```
-
-Each module is self-contained and can be understood independently.
+* [`README.md`](README.md) — full package reference (modules,
+  layout, env vars).
+* [`ARCHITECTURE.md`](ARCHITECTURE.md) — detailed component map.
+* Root [`HISTORY.md`](../../HISTORY.md) — chronology of S1–S6,
+  Round 2-A/B/C, Phase A–F.

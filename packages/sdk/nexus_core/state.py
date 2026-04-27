@@ -43,7 +43,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Optional
 
-logger = logging.getLogger("rune.state")
+logger = logging.getLogger("nexus_core.state")
 
 
 def _agent_id_to_int(agent_id: str) -> int:
@@ -138,7 +138,7 @@ class StateManager:
 
     Mode is auto-detected based on constructor args:
       - StateManager()                           → local mode
-      - StateManager(base_dir=".rune_state")     → local mode at custom dir
+      - StateManager(base_dir=".nexus_state")     → local mode at custom dir
       - StateManager(                            → chain mode
             rpc_url="https://...",
             private_key="0x...",
@@ -153,7 +153,7 @@ class StateManager:
     def __init__(
         self,
         # Local mode (Phase 1)
-        base_dir: str = ".bnbchain_state",
+        base_dir: str = ".nexus_state",
         # Chain mode (Phase 2) — if any of these are set, uses real chain
         rpc_url: Optional[str] = None,
         private_key: Optional[str] = None,
@@ -161,7 +161,7 @@ class StateManager:
         task_manager_address: Optional[str] = None,
         identity_registry_address: Optional[str] = None,
         greenfield_private_key: Optional[str] = None,
-        greenfield_bucket: str = "rune-agent-state",
+        greenfield_bucket: str = "nexus-agent-state",
         greenfield_network: str = "testnet",
         network: str = "bsc_testnet",
         # Explicit mode override: "local" forces file-based, "chain" forces on-chain,
@@ -169,9 +169,9 @@ class StateManager:
         mode: Optional[str] = None,
     ):
         # Auto-detect mode from environment or constructor args.
-        # Supports network-specific env vars: RUNE_TESTNET_* / RUNE_MAINNET_*
-        # Falls back to legacy RUNE_BSC_RPC / RUNE_AGENT_STATE_ADDRESS for compat.
-        env_network = os.environ.get("RUNE_NETWORK", "bsc-testnet")
+        # Supports network-specific env vars: NEXUS_TESTNET_* / NEXUS_MAINNET_*
+        # Falls back to NEXUS_BSC_RPC / NEXUS_AGENT_STATE_ADDRESS for compat.
+        env_network = os.environ.get("NEXUS_NETWORK", "bsc-testnet")
         if "mainnet" in (network or env_network):
             net_prefix = "MAINNET"
         else:
@@ -179,26 +179,26 @@ class StateManager:
 
         rpc_url = (
             rpc_url
-            or os.environ.get(f"RUNE_{net_prefix}_RPC")
-            or os.environ.get("RUNE_BSC_RPC")
+            or os.environ.get(f"NEXUS_{net_prefix}_RPC")
+            or os.environ.get("NEXUS_BSC_RPC")
         )
-        private_key = private_key or os.environ.get("RUNE_PRIVATE_KEY")
+        private_key = private_key or os.environ.get("NEXUS_PRIVATE_KEY")
         agent_state_address = (
             agent_state_address
-            or os.environ.get(f"RUNE_{net_prefix}_AGENT_STATE_ADDRESS")
-            or os.environ.get("RUNE_AGENT_STATE_ADDRESS")
+            or os.environ.get(f"NEXUS_{net_prefix}_AGENT_STATE_ADDRESS")
+            or os.environ.get("NEXUS_AGENT_STATE_ADDRESS")
         )
         task_manager_address = (
             task_manager_address
-            or os.environ.get(f"RUNE_{net_prefix}_TASK_MANAGER_ADDRESS")
-            or os.environ.get("RUNE_TASK_MANAGER_ADDRESS")
+            or os.environ.get(f"NEXUS_{net_prefix}_TASK_MANAGER_ADDRESS")
+            or os.environ.get("NEXUS_TASK_MANAGER_ADDRESS")
         )
         identity_registry_address = (
             identity_registry_address
-            or os.environ.get(f"RUNE_{net_prefix}_IDENTITY_REGISTRY")
+            or os.environ.get(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY")
         )
         greenfield_private_key = (
-            greenfield_private_key or os.environ.get("RUNE_GREENFIELD_KEY")
+            greenfield_private_key or os.environ.get("NEXUS_GREENFIELD_KEY")
         )
 
         # Determine mode: explicit override > auto-detect from args/env
@@ -272,10 +272,10 @@ class StateManager:
         network: str,
     ):
         """Phase 2: Real web3.py + Greenfield."""
-        from .chain import RuneChainClient
+        from .chain import BSCClient
         from .greenfield import GreenfieldClient
 
-        self._chain_client = RuneChainClient(
+        self._chain_client = BSCClient(
             rpc_url=rpc_url,
             private_key=private_key,
             agent_state_address=agent_state_address,
@@ -297,11 +297,11 @@ class StateManager:
                 logger.warning(
                     "greenfield-python-sdk not installed, falling back to local storage"
                 )
-                self.data_dir = Path(".rune_state") / "data"
+                self.data_dir = Path(".nexus_state") / "data"
                 self.data_dir.mkdir(parents=True, exist_ok=True)
                 self.greenfield = GreenfieldClient(local_dir=str(self.data_dir))
         else:
-            self.data_dir = Path(".rune_state") / "data"
+            self.data_dir = Path(".nexus_state") / "data"
             self.data_dir.mkdir(parents=True, exist_ok=True)
             self.greenfield = GreenfieldClient(local_dir=str(self.data_dir))
 
@@ -341,7 +341,7 @@ class StateManager:
 
     @property
     def chain_client(self):
-        """Access the underlying RuneChainClient (chain mode only)."""
+        """Access the underlying BSCClient (chain mode only)."""
         return self._chain_client
 
     def sync_nonce(self) -> None:

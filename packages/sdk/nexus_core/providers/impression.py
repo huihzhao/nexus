@@ -1,5 +1,5 @@
 """
-ImpressionProviderImpl — concrete RuneImpressionProvider backed by StorageBackend.
+ImpressionProviderImpl — concrete ImpressionProvider backed by StorageBackend.
 
 Domain logic:
   - Store/retrieve agent-to-agent impressions
@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 
 from ..core.backend import StorageBackend
 from ..core.models import Impression, ImpressionSummary, NetworkStats
-from ..core.providers import RuneImpressionProvider
+from ..core.providers import ImpressionProvider
 
 
-class ImpressionProviderImpl(RuneImpressionProvider):
+class ImpressionProviderImpl(ImpressionProvider):
     """
     Concrete impression provider backed by StorageBackend.
 

@@ -9,7 +9,7 @@ Available adapters:
   - adk:           Google ADK (RuneSessionService, RuneMemoryService, RuneArtifactService)
   - langgraph:     LangGraph (RuneCheckpointer)
   - crewai:        CrewAI (RuneCrewStorage, RuneCrewCheckpointStorage)
-  - a2a:           A2A Protocol (StatelessA2AAgent, AgentRuntime)
+  - a2a:           A2A Protocol (StatelessA2AAgent, A2ARuntime)
   - a2a_task_store: A2A TaskStore (BNBChainTaskStore)
   - adk_memory:    Legacy ADK memory adapter (RuneMemoryService)
 

@@ -71,13 +71,13 @@ logger = logging.getLogger(__name__)
 def _twin_base_dir() -> Path:
     """Where TwinManager places per-user twin data dirs.
 
-    Read from RUNE_TWIN_BASE_DIR if set (matches twin_manager's env
+    Read from NEXUS_TWIN_BASE_DIR if set (matches twin_manager's env
     contract), else fall back to ``~/.nexus_server/twins`` — same default
     as ``twin_manager.TWIN_BASE_DIR``.
     """
     return Path(
         os.environ.get(
-            "RUNE_TWIN_BASE_DIR",
+            "NEXUS_TWIN_BASE_DIR",
             os.path.expanduser("~/.nexus_server/twins"),
         )
     )

@@ -238,7 +238,7 @@ async def main_loop(args):
     # automatically. Attaching to both parent + child caused every line
     # to appear twice in the log file.
     for logger_name in [
-        "rune.backend.chain",          # ChainBackend: reads, writes, anchoring
+        "nexus_core.backend.chain",          # ChainBackend: reads, writes, anchoring
         "nexus_core.providers",     # All SDK providers (memory, session, etc.)
         "nexus_core.greenfield",    # Greenfield client
         "nexus.evolution",          # Evolution engine + all evolvers
@@ -278,20 +278,20 @@ async def main_loop(args):
         sys.exit(1)
 
     # ── Chain mode config ──
-    private_key = args.private_key or _env("RUNE_PRIVATE_KEY", "")
-    network = args.network or _env("RUNE_NETWORK", "testnet")
+    private_key = args.private_key or _env("NEXUS_PRIVATE_KEY", "")
+    network = args.network or _env("NEXUS_NETWORK", "testnet")
     chain_mode = bool(private_key)
 
     # Chain addresses (env vars auto-resolved by SDK, but we can pass explicitly)
     net_prefix = "MAINNET" if "mainnet" in network else "TESTNET"
-    rpc_url = _env(f"RUNE_{net_prefix}_RPC", "")
-    agent_state_address = _env(f"RUNE_{net_prefix}_AGENT_STATE_ADDRESS", "")
-    task_manager_address = _env(f"RUNE_{net_prefix}_TASK_MANAGER_ADDRESS", "")
+    rpc_url = _env(f"NEXUS_{net_prefix}_RPC", "")
+    agent_state_address = _env(f"NEXUS_{net_prefix}_AGENT_STATE_ADDRESS", "")
+    task_manager_address = _env(f"NEXUS_{net_prefix}_TASK_MANAGER_ADDRESS", "")
     identity_registry_address = (
-        _env(f"RUNE_{net_prefix}_IDENTITY_REGISTRY", "")
-        or _env(f"RUNE_{net_prefix}_IDENTITY_REGISTRY_ADDRESS", "")
+        _env(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY", "")
+        or _env(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY_ADDRESS", "")
     )
-    greenfield_bucket = _env("RUNE_GREENFIELD_BUCKET", "rune-agent-state")
+    greenfield_bucket = _env("NEXUS_GREENFIELD_BUCKET", "nexus-agent-state")
 
     if chain_mode:
         print(f"\n{GOLD}Initializing Rune Nexus (chain mode: {network})...{RESET}")
@@ -404,11 +404,11 @@ def cli_main():
     # Chain mode options
     parser.add_argument(
         "--private-key", default="",
-        help="BSC wallet private key — enables chain mode (env: RUNE_PRIVATE_KEY)",
+        help="BSC wallet private key — enables chain mode (env: NEXUS_PRIVATE_KEY)",
     )
     parser.add_argument(
         "--network", default="", choices=["testnet", "mainnet", ""],
-        help="BSC network (env: RUNE_NETWORK, default: testnet)",
+        help="BSC network (env: NEXUS_NETWORK, default: testnet)",
     )
 
     # Tool options

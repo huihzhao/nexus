@@ -43,9 +43,9 @@ function out(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
-const PRIVATE_KEY = process.env.RUNE_PRIVATE_KEY;
-const BUCKET = process.env.RUNE_GREENFIELD_BUCKET || "rune-agent-state";
-const NETWORK = process.env.RUNE_GREENFIELD_NETWORK || "testnet";
+const PRIVATE_KEY = process.env.NEXUS_PRIVATE_KEY;
+const BUCKET = process.env.NEXUS_GREENFIELD_BUCKET || "nexus-agent-state";
+const NETWORK = process.env.NEXUS_GREENFIELD_NETWORK || "testnet";
 
 const CONFIGS = {
   testnet: { chainId: "5600", chainRpc: "https://gnfd-testnet-fullnode-tendermint-us.bnbchain.org" },
@@ -67,7 +67,7 @@ let ready = false;
 
 async function init() {
   if (!PRIVATE_KEY) {
-    out({ id: 0, ok: false, error: "RUNE_PRIVATE_KEY not set" });
+    out({ id: 0, ok: false, error: "NEXUS_PRIVATE_KEY not set" });
     process.exit(1);
   }
 

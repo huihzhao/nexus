@@ -9,7 +9,7 @@ import logging
 import time
 from typing import Any
 
-from nexus_core import RuneProvider
+from nexus_core import AgentRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ Return ONLY valid JSON, no markdown fences."""
 class PersonaEvolver:
     """Evolves the twin's persona through self-reflection."""
 
-    def __init__(self, rune: RuneProvider, agent_id: str, llm_fn: Any):
+    def __init__(self, rune: AgentRuntime, agent_id: str, llm_fn: Any):
         self.rune = rune
         self.agent_id = agent_id
         self.llm_fn = llm_fn

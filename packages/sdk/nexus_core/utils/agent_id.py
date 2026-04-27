@@ -5,29 +5,29 @@
   ChainBackend.
 
 * :func:`bucket_for_agent` is THE Greenfield bucket name for an agent:
-  ``rune-agent-{tokenId}``. Per-agent buckets are mandatory across the
+  ``nexus-agent-{tokenId}``. Per-agent buckets are mandatory across the
   SDK — there is no shared-bucket fallback. Pass through everywhere
   ``GreenfieldClient`` / ``ChainBackend`` / ``DigitalTwin`` is built.
 """
 
 import hashlib
 
-BUCKET_PREFIX = "rune-agent-"
+BUCKET_PREFIX = "nexus-agent-"
 
 
 def bucket_for_agent(token_id) -> str:
     """Greenfield bucket name for an ERC-8004 agent.
 
-    Returns ``rune-agent-{token_id}``. Greenfield's bucket naming rules
+    Returns ``nexus-agent-{token_id}``. Greenfield's bucket naming rules
     (3-63 chars, lowercase letters/digits/dashes, can't be IP-shaped)
     are satisfied for any reasonable uint256 value.
 
     Example::
         >>> bucket_for_agent(864)
-        'rune-agent-864'
+        'nexus-agent-864'
 
     The canonical and ONLY supported convention. There is no shared
-    "rune-agent-state" bucket — every agent is isolated.
+    "nexus-agent-state" bucket — every agent is isolated.
     """
     if token_id is None:
         raise ValueError("bucket_for_agent: token_id must not be None")

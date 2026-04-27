@@ -11,17 +11,17 @@ os.environ["GEMINI_API_KEY"] = "fake-key-for-testing"
 os.environ["DATABASE_URL"] = f"sqlite:///{_test_db}"
 os.environ["WEBAUTHN_RP_ID"] = "localhost"
 os.environ["WEBAUTHN_ORIGIN"] = "http://localhost:8001"
-# Phase B: the anchor retry daemon was removed. ``RUNE_DISABLE_RETRY_DAEMON``
+# Phase B: the anchor retry daemon was removed. ``NEXUS_DISABLE_RETRY_DAEMON``
 # used to exist here for test determinism — no longer needed; main.py
 # doesn't start a daemon at all.
 
 # Phase D: Twin path is opt-in for tests. The default in production is
-# RUNE_USE_TWIN=1, but every existing /llm/chat test mocks
+# NEXUS_USE_TWIN=1, but every existing /llm/chat test mocks
 # llm_gateway.call_llm — those mocks would never be hit if the request
 # routed through DigitalTwin.chat() instead. Tests that specifically
 # want to exercise the twin path set _test_override on twin_manager.
-os.environ["RUNE_USE_TWIN"] = "0"
-os.environ["RUNE_DISABLE_TWIN_REAPER"] = "1"
+os.environ["NEXUS_USE_TWIN"] = "0"
+os.environ["NEXUS_DISABLE_TWIN_REAPER"] = "1"
 
 # S5 isolation: ``twin_event_log._db_path`` defaults to
 # ~/.nexus_server/twins/{user_id}/event_log/{agent_id}.db. The S5 tests
@@ -30,7 +30,7 @@ os.environ["RUNE_DISABLE_TWIN_REAPER"] = "1"
 # (and in CI, in $HOME of the runner) and leak across runs. Pin to a
 # tempdir we can wipe between tests.
 _test_twin_dir = os.path.join(tempfile.gettempdir(), "rune_test_twins")
-os.environ["RUNE_TWIN_BASE_DIR"] = _test_twin_dir
+os.environ["NEXUS_TWIN_BASE_DIR"] = _test_twin_dir
 
 
 @pytest.fixture(autouse=True)

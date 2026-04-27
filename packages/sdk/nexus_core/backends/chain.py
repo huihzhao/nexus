@@ -25,7 +25,7 @@ from typing import Optional
 
 from ..core.backend import StorageBackend
 
-logger = logging.getLogger("rune.backend.chain")
+logger = logging.getLogger("nexus_core.backend.chain")
 
 
 class ChainBackend(StorageBackend):
@@ -40,7 +40,7 @@ class ChainBackend(StorageBackend):
         self,
         private_key: str,
         network: str = "testnet",
-        # Per-agent bucket is canonical now. ``rune-agent-state`` shared
+        # Per-agent bucket is canonical now. ``nexus-agent-state`` shared
         # bucket is legacy — see SDK ARCHITECTURE.md (Layout A vs B).
         # Use nexus_core.bucket_for_agent(token_id) to compute.
         # ``None`` here delegates the deprecation warning to GreenfieldClient.
@@ -60,25 +60,25 @@ class ChainBackend(StorageBackend):
         net_prefix = "MAINNET" if "mainnet" in network else "TESTNET"
         self._rpc_url = (
             rpc_url
-            or os.environ.get(f"RUNE_{net_prefix}_RPC")
-            or os.environ.get("RUNE_BSC_RPC")
+            or os.environ.get(f"NEXUS_{net_prefix}_RPC")
+            or os.environ.get("NEXUS_BSC_RPC")
         )
         self._agent_state_address = (
             agent_state_address
-            or os.environ.get(f"RUNE_{net_prefix}_AGENT_STATE_ADDRESS")
-            or os.environ.get("RUNE_AGENT_STATE_ADDRESS")
+            or os.environ.get(f"NEXUS_{net_prefix}_AGENT_STATE_ADDRESS")
+            or os.environ.get("NEXUS_AGENT_STATE_ADDRESS")
         )
         self._identity_registry_address = (
             identity_registry_address
-            or os.environ.get(f"RUNE_{net_prefix}_IDENTITY_REGISTRY_ADDRESS")
-            or os.environ.get(f"RUNE_{net_prefix}_IDENTITY_REGISTRY")
-            or os.environ.get("RUNE_IDENTITY_REGISTRY_ADDRESS")
-            or os.environ.get("RUNE_IDENTITY_REGISTRY")
+            or os.environ.get(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY_ADDRESS")
+            or os.environ.get(f"NEXUS_{net_prefix}_IDENTITY_REGISTRY")
+            or os.environ.get("NEXUS_IDENTITY_REGISTRY_ADDRESS")
+            or os.environ.get("NEXUS_IDENTITY_REGISTRY")
         )
         self._task_manager_address = (
             task_manager_address
-            or os.environ.get(f"RUNE_{net_prefix}_TASK_MANAGER_ADDRESS")
-            or os.environ.get("RUNE_TASK_MANAGER_ADDRESS")
+            or os.environ.get(f"NEXUS_{net_prefix}_TASK_MANAGER_ADDRESS")
+            or os.environ.get("NEXUS_TASK_MANAGER_ADDRESS")
         )
 
         # Initialize Greenfield client. Per-agent bucket is mandatory in
@@ -98,14 +98,14 @@ class ChainBackend(StorageBackend):
             )
         except ImportError:
             logger.warning("Greenfield SDK not available, using local fallback")
-            self._greenfield = GreenfieldClient(local_dir=".rune_state/data")
+            self._greenfield = GreenfieldClient(local_dir=".nexus_state/data")
 
         # Initialize chain client (optional — not all operations need it)
         self._chain_client = None
         if self._rpc_url and self._agent_state_address:
             try:
-                from ..chain import RuneChainClient
-                self._chain_client = RuneChainClient(
+                from ..chain import BSCClient
+                self._chain_client = BSCClient(
                     rpc_url=self._rpc_url,
                     private_key=private_key,
                     agent_state_address=self._agent_state_address,
@@ -131,7 +131,7 @@ class ChainBackend(StorageBackend):
         # Every write goes to both local cache AND Greenfield.
         # Reads check local first, only hit Greenfield on cache miss.
         import os
-        cache_base = os.environ.get("RUNE_CACHE_DIR", ".rune_cache")
+        cache_base = os.environ.get("NEXUS_CACHE_DIR", ".rune_cache")
         self._cache_dir = Path(cache_base)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 

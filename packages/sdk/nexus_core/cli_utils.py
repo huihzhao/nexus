@@ -48,36 +48,36 @@ def create_state_manager(args):
     from .state import StateManager
 
     if getattr(args, "mode", "local") == "testnet":
-        env_network = os.environ.get("RUNE_NETWORK", "bsc-testnet")
+        env_network = os.environ.get("NEXUS_NETWORK", "bsc-testnet")
         net_prefix = "MAINNET" if "mainnet" in env_network else "TESTNET"
 
-        private_key = getattr(args, "private_key", None) or os.environ.get("RUNE_PRIVATE_KEY")
+        private_key = getattr(args, "private_key", None) or os.environ.get("NEXUS_PRIVATE_KEY")
         agent_state = (
             getattr(args, "agent_state", None)
-            or os.environ.get(f"RUNE_{net_prefix}_AGENT_STATE_ADDRESS")
-            or os.environ.get("RUNE_AGENT_STATE_ADDRESS")
+            or os.environ.get(f"NEXUS_{net_prefix}_AGENT_STATE_ADDRESS")
+            or os.environ.get("NEXUS_AGENT_STATE_ADDRESS")
         )
         task_manager = (
             getattr(args, "task_manager", None)
-            or os.environ.get(f"RUNE_{net_prefix}_TASK_MANAGER_ADDRESS")
-            or os.environ.get("RUNE_TASK_MANAGER_ADDRESS")
+            or os.environ.get(f"NEXUS_{net_prefix}_TASK_MANAGER_ADDRESS")
+            or os.environ.get("NEXUS_TASK_MANAGER_ADDRESS")
         )
         rpc_url = (
             getattr(args, "rpc_url", None)
-            or os.environ.get(f"RUNE_{net_prefix}_RPC")
-            or os.environ.get("RUNE_BSC_RPC", "https://data-seed-prebsc-1-s1.bnbchain.org:8545")
+            or os.environ.get(f"NEXUS_{net_prefix}_RPC")
+            or os.environ.get("NEXUS_BSC_RPC", "https://data-seed-prebsc-1-s1.bnbchain.org:8545")
         )
 
         if not private_key:
-            print("  ERROR: --private-key or RUNE_PRIVATE_KEY required for testnet mode")
-            print("  Tip: Use RuneKeystore to create a wallet first:")
-            print('    from nexus_core.keystore import RuneKeystore')
-            print('    ks = RuneKeystore(password="my-pass")')
+            print("  ERROR: --private-key or NEXUS_PRIVATE_KEY required for testnet mode")
+            print("  Tip: Use Keystore to create a wallet first:")
+            print('    from nexus_core.keystore import Keystore')
+            print('    ks = Keystore(password="my-pass")')
             print('    print(ks.export_private_key())')
             sys.exit(1)
 
         if not agent_state:
-            print("  ERROR: --agent-state or RUNE_AGENT_STATE_ADDRESS required")
+            print("  ERROR: --agent-state or NEXUS_AGENT_STATE_ADDRESS required")
             print("  Deploy contracts first: cd contracts && npx hardhat run scripts/deploy.js --network bscTestnet")
             sys.exit(1)
 
@@ -98,7 +98,7 @@ def add_state_manager_args(parser) -> None:
                         help="local = file-based mock, testnet = real BSC + Greenfield")
     parser.add_argument("--state-dir", default="/tmp/bnbchain_rune_state",
                         help="Base directory for local mode state storage")
-    parser.add_argument("--private-key", help="Wallet private key (or set RUNE_PRIVATE_KEY)")
+    parser.add_argument("--private-key", help="Wallet private key (or set NEXUS_PRIVATE_KEY)")
     parser.add_argument("--agent-state", help="AgentStateExtension contract address")
     parser.add_argument("--task-manager", help="TaskStateManager contract address")
     parser.add_argument("--rpc-url", help="BSC RPC endpoint")

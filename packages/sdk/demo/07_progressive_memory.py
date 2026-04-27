@@ -39,7 +39,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nexus_core import Rune
+import nexus_core
 from nexus_core.cli_utils import load_dotenv
 
 # ── Simulated agent memories (accumulated over weeks of use) ────────
@@ -83,16 +83,16 @@ def create_rune(args):
     """Create Rune provider based on CLI mode."""
     if args.mode == "testnet":
         load_dotenv()
-        private_key = os.environ.get("RUNE_PRIVATE_KEY")
+        private_key = os.environ.get("NEXUS_PRIVATE_KEY")
         if not private_key:
-            print("  ERROR: RUNE_PRIVATE_KEY required for testnet mode")
+            print("  ERROR: NEXUS_PRIVATE_KEY required for testnet mode")
             sys.exit(1)
-        return Rune.testnet(private_key=private_key)
+        return nexus_core.testnet(private_key=private_key)
     else:
         state_dir = getattr(args, 'state_dir', '/tmp/rune_demo_07')
         if os.path.exists(state_dir):
             shutil.rmtree(state_dir)
-        return Rune.local(base_dir=state_dir)
+        return nexus_core.local(base_dir=state_dir)
 
 
 async def main():

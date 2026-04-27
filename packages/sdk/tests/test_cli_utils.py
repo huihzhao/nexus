@@ -25,56 +25,56 @@ class TestLoadDotenv:
 
     def test_reads_env_file(self, tmp_path):
         env_file = tmp_path / ".env"
-        env_file.write_text("TEST_RUNE_VAR_A=hello\nTEST_RUNE_VAR_B=world\n")
+        env_file.write_text("TEST_NEXUS_VAR_A=hello\nTEST_NEXUS_VAR_B=world\n")
 
         # Temporarily change CWD so load_dotenv finds the file
         old_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
             # Clear any pre-existing values
-            os.environ.pop("TEST_RUNE_VAR_A", None)
-            os.environ.pop("TEST_RUNE_VAR_B", None)
+            os.environ.pop("TEST_NEXUS_VAR_A", None)
+            os.environ.pop("TEST_NEXUS_VAR_B", None)
 
             load_dotenv()
 
-            assert os.environ.get("TEST_RUNE_VAR_A") == "hello"
-            assert os.environ.get("TEST_RUNE_VAR_B") == "world"
+            assert os.environ.get("TEST_NEXUS_VAR_A") == "hello"
+            assert os.environ.get("TEST_NEXUS_VAR_B") == "world"
         finally:
             os.chdir(old_cwd)
-            os.environ.pop("TEST_RUNE_VAR_A", None)
-            os.environ.pop("TEST_RUNE_VAR_B", None)
+            os.environ.pop("TEST_NEXUS_VAR_A", None)
+            os.environ.pop("TEST_NEXUS_VAR_B", None)
 
     def test_does_not_overwrite_existing(self, tmp_path):
         env_file = tmp_path / ".env"
-        env_file.write_text("TEST_RUNE_EXIST=new_value\n")
+        env_file.write_text("TEST_NEXUS_EXIST=new_value\n")
 
         old_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
-            os.environ["TEST_RUNE_EXIST"] = "original"
+            os.environ["TEST_NEXUS_EXIST"] = "original"
 
             load_dotenv()
 
-            assert os.environ["TEST_RUNE_EXIST"] == "original"
+            assert os.environ["TEST_NEXUS_EXIST"] == "original"
         finally:
             os.chdir(old_cwd)
-            os.environ.pop("TEST_RUNE_EXIST", None)
+            os.environ.pop("TEST_NEXUS_EXIST", None)
 
     def test_skips_comments_and_blanks(self, tmp_path):
         env_file = tmp_path / ".env"
-        env_file.write_text("# This is a comment\n\nTEST_RUNE_ONLY=yes\n   \n")
+        env_file.write_text("# This is a comment\n\nTEST_NEXUS_ONLY=yes\n   \n")
 
         old_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
-            os.environ.pop("TEST_RUNE_ONLY", None)
+            os.environ.pop("TEST_NEXUS_ONLY", None)
 
             load_dotenv()
 
-            assert os.environ.get("TEST_RUNE_ONLY") == "yes"
+            assert os.environ.get("TEST_NEXUS_ONLY") == "yes"
         finally:
             os.chdir(old_cwd)
-            os.environ.pop("TEST_RUNE_ONLY", None)
+            os.environ.pop("TEST_NEXUS_ONLY", None)
 
 
 class TestCreateStateManager:
@@ -94,13 +94,13 @@ class TestCreateStateManager:
             rpc_url=None,
         )
         # Clear env to ensure no fallback
-        old_pk = os.environ.pop("RUNE_PRIVATE_KEY", None)
+        old_pk = os.environ.pop("NEXUS_PRIVATE_KEY", None)
         try:
             with pytest.raises(SystemExit):
                 create_state_manager(args)
         finally:
             if old_pk:
-                os.environ["RUNE_PRIVATE_KEY"] = old_pk
+                os.environ["NEXUS_PRIVATE_KEY"] = old_pk
 
 
 class TestAddStateManagerArgs:

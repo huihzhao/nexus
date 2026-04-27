@@ -9,8 +9,8 @@ import asyncio
 import json
 import pytest
 
+import nexus_core
 from nexus_core import (
-    Rune,
     MockBackend,
     Impression,
     ImpressionDimensions,
@@ -128,7 +128,7 @@ def backend():
 
 @pytest.fixture
 def rune(backend):
-    return Rune.builder().backend(backend).build()
+    return nexus_core.builder().backend(backend).build()
 
 
 @pytest.fixture
@@ -387,8 +387,8 @@ class TestTwoTwinGossip:
 
     def test_two_twins_gossip_and_impress(self, backend, llm):
         """Full integration: two twins gossip, both form impressions."""
-        rune_a = Rune.builder().backend(backend).build()
-        rune_b = Rune.builder().backend(backend).build()
+        rune_a = nexus_core.builder().backend(backend).build()
+        rune_b = nexus_core.builder().backend(backend).build()
 
         social_a = SocialEngine(rune_a, "twin-alice", llm.complete, "Alice")
         social_b = SocialEngine(rune_b, "twin-bob", llm.complete, "Bob")
@@ -455,7 +455,7 @@ class TestTwoTwinGossip:
 
     def test_social_graph_after_gossip(self, backend, llm):
         """After gossip, social graph queries work correctly."""
-        rune = Rune.builder().backend(backend).build()
+        rune = nexus_core.builder().backend(backend).build()
 
         # Record impressions from multiple gossip sessions
         asyncio.run(rune.impressions.record(Impression(

@@ -4,7 +4,7 @@ What's in here:
 
 | File | Purpose |
 |---|---|
-| `routes.py` | Facade. Real code at `rune_server.agent_state`. Hosts two routers: `router` (prefix `/api/v1/agent`) and `sync_router` (prefix `/api/v1/sync` for the legacy `/sync/anchors` view). |
+| `routes.py` | Facade. Real code at `nexus_server.agent_state`. Hosts two routers: `router` (prefix `/api/v1/agent`) and `sync_router` (prefix `/api/v1/sync` for the legacy `/sync/anchors` view). |
 | `__init__.py` | Re-exports both routers. |
 
 Endpoints exposed:
@@ -25,7 +25,7 @@ What the new dev needs to know:
   `twin_chain_events`).
 - The pivot from "read sync_events table" to "read twin's per-user
   EventLog SQLite read-only" happened in S5. There's a tiny module
-  (``twins/event_views`` / ``rune_server.twin_event_log``) that opens
+  (``twins/event_views`` / ``nexus_server.twin_event_log``) that opens
   the per-user DB with `sqlite3.connect("file:...?mode=ro", uri=True)`
   and runs typed queries.
 - Adding a new view endpoint means: define the response Pydantic

@@ -932,7 +932,7 @@ bnbchain_agent/
         storage.py              # Trace persistence (Artifacts backend)
 ```
 
-**Key design choice:** The evolution framework lives in the SDK (`bnbchain_agent`), not in Nexus (`rune_twin`). This means any application built on Rune — not just digital twins — can use closed-loop evolution with safety gating. Nexus becomes a *consumer* of the SDK's evolution primitives, rather than inventing its own.
+**Key design choice:** The evolution framework lives in the SDK (`nexus_core`), not in Nexus (`nexus` — the digital-twin runtime). This means any application built on the SDK — not just digital twins — can use closed-loop evolution with safety gating. Nexus becomes a *consumer* of the SDK's evolution primitives, rather than inventing its own.
 
 ### 7.6 How Social Protocol Uses the Evolution Framework
 

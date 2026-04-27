@@ -8,7 +8,7 @@ After every successful ``/api/v1/sync/push``, the handler calls
   2. Schedules an asyncio task that:
        a. Builds a JSON payload of the just-pushed events.
        b. PUTs it to Greenfield (returns SHA-256 content hash).
-       c. Calls :py:meth:`RuneChainClient.update_state_root` to anchor the
+       c. Calls :py:meth:`BSCClient.update_state_root` to anchor the
           hash into the user's ERC-8004 AgentStateExtension.
        d. Updates the ``sync_anchors`` row with final status.
 
@@ -53,14 +53,14 @@ config = get_config()
 #
 # Architectural note (2026-04 correction):
 #
-# Each ERC-8004 agent gets its OWN Greenfield bucket: ``rune-agent-{tokenId}``.
+# Each ERC-8004 agent gets its OWN Greenfield bucket: ``nexus-agent-{tokenId}``.
 # That mirrors NFT ownership semantics — the bucket lives or dies with the
 # agent, and a future export/transfer of agent ownership maps to a single
 # resource. The shared "rune-server-sync" bucket the first iteration used
 # was wrong: it conflated all users into one Greenfield namespace.
 #
 # Implementation:
-#   - One RuneChainClient process-wide (BSC client doesn't care which agent;
+#   - One BSCClient process-wide (BSC client doesn't care which agent;
 #     same signer signs every tx).
 #   - One GreenfieldClient PER chain_agent_id, cached. Each instance shares
 #     the same Node daemon (class-level _daemon_proc in GreenfieldClient).
@@ -92,7 +92,7 @@ def _bucket_for_agent(chain_agent_id: int) -> str:
         from nexus_core.utils.agent_id import bucket_for_agent
         return bucket_for_agent(chain_agent_id)
     except Exception:
-        return f"rune-agent-{chain_agent_id}"
+        return f"nexus-agent-{chain_agent_id}"
 
 
 class AnchorBackend:
@@ -183,7 +183,7 @@ class _RealAnchorBackend(AnchorBackend):
 
 
 def _get_chain_client_singleton():
-    """Build (or return) the process-wide RuneChainClient.
+    """Build (or return) the process-wide BSCClient.
 
     BSC interactions don't depend on agent — same signer, same contracts.
     """
@@ -195,7 +195,7 @@ def _get_chain_client_singleton():
         return None
 
     try:
-        from nexus_core.chain import RuneChainClient
+        from nexus_core.chain import BSCClient
     except Exception as e:
         logger.warning("SDK chain client unavailable: %s", e)
         return None
@@ -203,28 +203,28 @@ def _get_chain_client_singleton():
     pk = config.SERVER_PRIVATE_KEY or ""
     if pk and not pk.startswith("0x"):
         pk = "0x" + pk
-    is_mainnet = "mainnet" in config.RUNE_NETWORK
+    is_mainnet = "mainnet" in config.NEXUS_NETWORK
     try:
-        _chain_client = RuneChainClient(
+        _chain_client = BSCClient(
             rpc_url=config.chain_active_rpc,
             private_key=pk,
             identity_registry_address=(
-                config.RUNE_MAINNET_IDENTITY_REGISTRY
+                config.NEXUS_MAINNET_IDENTITY_REGISTRY
                 if is_mainnet
-                else config.RUNE_TESTNET_IDENTITY_REGISTRY
+                else config.NEXUS_TESTNET_IDENTITY_REGISTRY
             ),
             agent_state_address=(
                 None if is_mainnet
-                else config.RUNE_TESTNET_AGENT_STATE_ADDRESS
+                else config.NEXUS_TESTNET_AGENT_STATE_ADDRESS
             ),
             task_manager_address=(
                 None if is_mainnet
-                else config.RUNE_TESTNET_TASK_MANAGER_ADDRESS
+                else config.NEXUS_TESTNET_TASK_MANAGER_ADDRESS
             ),
             network="bsc_mainnet" if is_mainnet else "bsc_testnet",
         )
     except Exception as e:
-        logger.warning("Failed to init RuneChainClient: %s", e)
+        logger.warning("Failed to init BSCClient: %s", e)
         _chain_client = None
         return None
     return _chain_client
@@ -262,7 +262,7 @@ def _get_backend_for_agent(chain_agent_id: int) -> Optional[AnchorBackend]:
             pk = config.SERVER_PRIVATE_KEY or ""
             if pk and not pk.startswith("0x"):
                 pk = "0x" + pk
-            is_mainnet = "mainnet" in config.RUNE_NETWORK
+            is_mainnet = "mainnet" in config.NEXUS_NETWORK
             try:
                 gf = GreenfieldClient(
                     private_key=pk,
@@ -372,7 +372,7 @@ def serialize_batch(user_id: str, sync_ids: list[int], events: list[dict]) -> by
     lives in the ``sync_anchors`` row's ``created_at`` column instead.
     """
     payload = {
-        "schema": "rune.sync.batch.v1",
+        "schema": "nexus.sync.batch.v1",
         "user_id": user_id,
         "sync_ids": sorted(sync_ids),
         "events": events,
@@ -407,7 +407,7 @@ async def _run_anchor_job(
     # 1. Need chain_agent_id for both bucket name AND BSC anchor.
     chain_agent_id = _fetch_chain_agent_id(user_id)
     if chain_agent_id is None:
-        # Greenfield bucket name is `rune-agent-{tokenId}`, so we can't
+        # Greenfield bucket name is `nexus-agent-{tokenId}`, so we can't
         # even pick a bucket without registration. Mark and let the daemon
         # come back to it once /chain/register-agent succeeds.
         _update_anchor(
@@ -439,7 +439,7 @@ async def _run_anchor_job(
         _update_anchor(
             anchor_id, status="pending",
             greenfield_path=(
-                f"rune-agent-{chain_agent_id}/{gf_path or object_path}"
+                f"nexus-agent-{chain_agent_id}/{gf_path or object_path}"
             ),
         )
     except Exception as e:
@@ -535,7 +535,7 @@ def list_anchors_for_user(user_id: str, limit: int = 50) -> list[dict]:
 # and retry them with exponential backoff. After S4 retired the
 # /sync/push enqueue path, this daemon ran on top of an empty queue —
 # no new rows were ever created via the legacy pipeline, only via tests.
-# The daemon was made opt-in (RUNE_ENABLE_RETRY_DAEMON=1) in S4 and
+# The daemon was made opt-in (NEXUS_ENABLE_RETRY_DAEMON=1) in S4 and
 # never re-enabled in production. Phase B removes the daemon entirely
 # along with its retry-state columns (next_retry_at, retry_count are
 # still in the schema for back-compat reads but never updated).

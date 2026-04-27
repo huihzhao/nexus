@@ -67,10 +67,10 @@ class ToolCallInfo(BaseModel):
 import os as _os
 
 MAX_ATTACHMENT_BYTES_TOTAL = int(
-    _os.environ.get("RUNE_MAX_ATTACHMENT_BYTES", str(100 * 1024 * 1024))
+    _os.environ.get("NEXUS_MAX_ATTACHMENT_BYTES", str(100 * 1024 * 1024))
 )
 MAX_INLINE_TEXT_BYTES = int(
-    _os.environ.get("RUNE_MAX_INLINE_TEXT_BYTES", str(256 * 1024))
+    _os.environ.get("NEXUS_MAX_INLINE_TEXT_BYTES", str(256 * 1024))
 )
 
 

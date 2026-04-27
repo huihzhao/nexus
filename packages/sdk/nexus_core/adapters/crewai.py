@@ -2,7 +2,7 @@
 CrewAI Adapter — bridges CrewAI's memory system to Rune Providers.
 
 CrewAI uses a cognitive memory model with encode, recall, consolidate,
-and forget operations. This adapter maps those to Rune's RuneMemoryProvider
+and forget operations. This adapter maps those to Rune's MemoryProvider
 for persistent, verifiable memory on BNBChain.
 
 Usage:
@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from ..core.providers import RuneMemoryProvider
+from ..core.providers import MemoryProvider
 from .registry import AdapterRegistry
 
 
@@ -40,12 +40,12 @@ class RuneCrewStorage:
 
     CrewAI's Memory class delegates storage operations to a pluggable
     storage backend. This class implements that interface using Rune's
-    RuneMemoryProvider for on-chain persistence.
+    MemoryProvider for on-chain persistence.
 
     Architecture:
         CrewAI Memory.encode()
             → RuneCrewStorage.save()
-                → RuneMemoryProvider.add()
+                → MemoryProvider.add()
                     → Greenfield (full content) + BSC (memory root hash)
 
     All memories persist across crew runs, machines, and runtimes.
@@ -53,7 +53,7 @@ class RuneCrewStorage:
 
     def __init__(
         self,
-        memory_provider: RuneMemoryProvider,
+        memory_provider: MemoryProvider,
         agent_id: str = "crewai-agent",
     ):
         """

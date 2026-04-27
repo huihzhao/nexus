@@ -1,5 +1,5 @@
 """
-ArtifactProviderImpl — concrete RuneArtifactProvider backed by StorageBackend.
+ArtifactProviderImpl — concrete ArtifactProvider backed by StorageBackend.
 
 Domain logic:
   - Version management (saving same filename creates new version)
@@ -19,10 +19,10 @@ from typing import Optional
 
 from ..core.backend import StorageBackend
 from ..core.models import Artifact
-from ..core.providers import RuneArtifactProvider
+from ..core.providers import ArtifactProvider
 
 
-class ArtifactProviderImpl(RuneArtifactProvider):
+class ArtifactProviderImpl(ArtifactProvider):
     """
     Concrete artifact provider with versioning.
 
@@ -135,7 +135,7 @@ class ArtifactProviderImpl(RuneArtifactProvider):
         expected_hash = ver_data.get("content_hash", "")
         if expected_hash and computed_hash != expected_hash:
             import logging
-            logging.getLogger("rune.artifact").warning(
+            logging.getLogger("nexus_core.artifact").warning(
                 "Content hash mismatch for %s v%d: expected %s, got %s — returning None",
                 filename, ver_data["version"], expected_hash[:16], computed_hash[:16],
             )
