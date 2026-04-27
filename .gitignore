@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+.pytest_cache/
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Node
+node_modules/
+package-lock.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.sln.DotSettings.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env & secrets
+.env
+.env.local
+.env.production
+
+# Runtime state (transient, regenerated on startup)
+.rune_*/
+*.log
+
+# Data (local dev databases)
+*.db
+*.sqlite
+*.sqlite3
+
+# Hardhat
+contracts/cache/
+contracts/artifacts/

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexus-core"
+version = "0.4.0"
+description = "Nexus SDK — Persistent, Verifiable Agent Infrastructure on BNB Chain (formerly bnbchain-agent)"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+    "web3>=6.15.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+adk = ["google-adk>=1.18.0"]
+a2a = ["a2a-sdk>=0.2.0"]
+identity = ["bnbagent>=0.2.0"]
+all = [
+    "google-adk>=1.18.0",
+    "a2a-sdk>=0.2.0",
+    "bnbagent>=0.2.0",
+]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.setuptools.packages.find]
+include = ["nexus_core*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

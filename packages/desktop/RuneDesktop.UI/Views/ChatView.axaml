@@ -1,0 +1,555 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="RuneDesktop.UI.Views.ChatView"
+             Background="{StaticResource SurfaceBaseBrush}">
+
+  <Panel>
+    <!-- ══════════════════════════════════════════════════════════════
+         Main two-pane layout: SIDEBAR (320px) | CHAT
+         The slide-over detail panel is layered ON TOP of the chat pane
+         when DetailPanel.IsOpen is true.
+         ══════════════════════════════════════════════════════════════ -->
+    <Grid ColumnDefinitions="320,*">
+
+      <!-- ═════ LEFT SIDEBAR ═════════════════════════════════════════ -->
+      <Border Grid.Column="0"
+              Background="{StaticResource SurfaceMutedBrush}"
+              BorderThickness="0,0,1,0"
+              BorderBrush="{StaticResource DividerBrush}">
+        <Grid RowDefinitions="Auto,Auto,Auto,*,Auto">
+
+          <!-- ── Identity card ─────────────────────────────────────── -->
+          <Border Grid.Row="0" Padding="16,18,16,14">
+            <StackPanel Spacing="10">
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <Border Width="36" Height="36" CornerRadius="10"
+                        Background="{StaticResource BrandAccentBrush}">
+                  <TextBlock Text="R" FontSize="17" FontWeight="Bold"
+                             Foreground="{StaticResource TextOnAccentBrush}"
+                             HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <StackPanel VerticalAlignment="Center" Spacing="2">
+                  <TextBlock Text="Rune Agent"
+                             FontSize="14" FontWeight="SemiBold"
+                             Foreground="{StaticResource TextPrimaryBrush}"/>
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <TextBlock Text="ERC-8004" FontSize="10" FontWeight="Bold"
+                               Foreground="{StaticResource SuccessBrush}"
+                               IsVisible="{Binding IsOnChain}"/>
+                    <TextBlock Text="{Binding ChainTokenId}"
+                               FontSize="11"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               FontFamily="Consolas, Menlo, monospace"
+                               IsVisible="{Binding IsOnChain}"/>
+                    <TextBlock Text="not registered"
+                               FontSize="11"
+                               Foreground="{StaticResource TextTertiaryBrush}"
+                               IsVisible="{Binding !IsOnChain}"/>
+                  </StackPanel>
+                </StackPanel>
+              </StackPanel>
+              <TextBlock Text="{Binding ChainNetwork}"
+                         FontSize="10"
+                         Foreground="{StaticResource TextTertiaryBrush}"
+                         IsVisible="{Binding ChainNetwork,
+                                   Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+            </StackPanel>
+          </Border>
+
+          <Border Grid.Row="1" Height="1"
+                  Background="{StaticResource DividerBrush}" Margin="16,0"/>
+
+          <!-- ── State counters ──────────────────────────────────────── -->
+          <StackPanel Grid.Row="2" Margin="16,12,16,8" Spacing="10">
+            <TextBlock Text="STATE" FontSize="10" FontWeight="Bold"
+                       Foreground="{StaticResource TextTertiaryBrush}"/>
+            <UniformGrid Columns="2">
+              <StackPanel Margin="0,0,8,8">
+                <TextBlock Text="{Binding TurnCount}" FontSize="20"
+                           FontWeight="Bold"
+                           Foreground="{StaticResource TextPrimaryBrush}"/>
+                <TextBlock Text="Turns" FontSize="10"
+                           Foreground="{StaticResource TextSecondaryBrush}"/>
+              </StackPanel>
+              <StackPanel Margin="8,0,0,8">
+                <TextBlock Text="{Binding MemoryCount}" FontSize="20"
+                           FontWeight="Bold"
+                           Foreground="{StaticResource TextPrimaryBrush}"/>
+                <TextBlock Text="Memories" FontSize="10"
+                           Foreground="{StaticResource TextSecondaryBrush}"/>
+              </StackPanel>
+              <StackPanel Margin="0,0,8,0">
+                <TextBlock Text="{Binding AnchoredCount}" FontSize="20"
+                           FontWeight="Bold"
+                           Foreground="{StaticResource SuccessBrush}"/>
+                <TextBlock Text="Anchored" FontSize="10"
+                           Foreground="{StaticResource TextSecondaryBrush}"/>
+              </StackPanel>
+              <StackPanel Margin="8,0,0,0">
+                <TextBlock Text="{Binding PendingAnchorCount}" FontSize="20"
+                           FontWeight="Bold"
+                           Foreground="{StaticResource WarningBrush}"/>
+                <TextBlock Text="Pending" FontSize="10"
+                           Foreground="{StaticResource TextSecondaryBrush}"/>
+              </StackPanel>
+            </UniformGrid>
+            <StackPanel Spacing="2">
+              <Button Content="📚  Browse memories"
+                      Command="{Binding BrowseMemoriesCommand}"
+                      Classes="sidebar" FontSize="12"/>
+              <Button Content="🔗  Browse anchors"
+                      Command="{Binding BrowseAnchorsCommand}"
+                      Classes="sidebar" FontSize="12"/>
+            </StackPanel>
+          </StackPanel>
+
+          <!-- ── Activity Stream ─────────────────────────────────────── -->
+          <Grid Grid.Row="3" RowDefinitions="Auto,*">
+            <Grid Grid.Row="0" Margin="16,8,16,4" ColumnDefinitions="*,Auto">
+              <TextBlock Grid.Column="0" Text="ACTIVITY"
+                         FontSize="10" FontWeight="Bold"
+                         Foreground="{StaticResource TextTertiaryBrush}"/>
+              <Button Grid.Column="1" Content="↻"
+                      Command="{Binding Activity.RefreshNowCommand}"
+                      Classes="ghost" FontSize="12"
+                      Padding="6,1" ToolTip.Tip="Refresh"/>
+            </Grid>
+
+            <Border Grid.Row="1" Margin="8,0,8,8">
+              <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <Panel>
+                  <!-- Empty state -->
+                  <TextBlock Text="No activity yet — say hi to your agent."
+                             FontSize="11"
+                             Foreground="{StaticResource TextTertiaryBrush}"
+                             TextWrapping="Wrap" Margin="10,8"
+                             IsVisible="{Binding Activity.IsEmpty}"/>
+                  <!-- Items -->
+                  <ItemsControl ItemsSource="{Binding Activity.Items}"
+                                IsVisible="{Binding !Activity.IsEmpty}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border Padding="8,6" Margin="2,2" CornerRadius="6"
+                                Background="Transparent">
+                          <Grid ColumnDefinitions="22,*"
+                                ColumnSpacing="8">
+                            <Border Grid.Column="0" Width="22" Height="22"
+                                    CornerRadius="11"
+                                    Background="{Binding IconBg}">
+                              <TextBlock Text="{Binding Icon}" FontSize="11"
+                                         FontWeight="Bold"
+                                         Foreground="{Binding IconFg}"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="2">
+                              <TextBlock Text="{Binding Summary}"
+                                         FontSize="11"
+                                         Foreground="{StaticResource TextPrimaryBrush}"
+                                         TextWrapping="Wrap"
+                                         MaxLines="3"
+                                         TextTrimming="CharacterEllipsis"/>
+                              <TextBlock Text="{Binding RelativeTime}"
+                                         FontSize="9"
+                                         Foreground="{StaticResource TextTertiaryBrush}"/>
+                            </StackPanel>
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </Panel>
+              </ScrollViewer>
+            </Border>
+          </Grid>
+        </Grid>
+      </Border>
+
+      <!-- ═════ RIGHT: CHAT AREA ════════════════════════════════════ -->
+      <Grid Grid.Column="1" RowDefinitions="*,Auto,Auto">
+
+        <!-- Messages -->
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
+                      x:Name="MessageScrollViewer">
+          <Panel>
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                        Spacing="10" Margin="32,80"
+                        IsVisible="{Binding HasNoMessages}">
+              <Border Width="56" Height="56" CornerRadius="14"
+                      Background="{StaticResource BrandAccentBrush}"
+                      HorizontalAlignment="Center">
+                <TextBlock Text="R" FontSize="26" FontWeight="Bold"
+                           Foreground="{StaticResource TextOnAccentBrush}"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <TextBlock Text="Say hi to your Rune agent"
+                         FontSize="15" FontWeight="SemiBold"
+                         Foreground="{StaticResource TextPrimaryBrush}"
+                         HorizontalAlignment="Center"/>
+              <TextBlock Text="Conversation, memory, and on-chain provenance show up in the sidebar as you chat."
+                         FontSize="12"
+                         Foreground="{StaticResource TextSecondaryBrush}"
+                         HorizontalAlignment="Center" TextAlignment="Center"
+                         MaxWidth="320" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <ItemsControl ItemsSource="{Binding Messages}"
+                          Margin="32,16,32,28">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <StackPanel Margin="0,8" HorizontalAlignment="{Binding HAlignment}">
+                    <StackPanel Orientation="Horizontal" Spacing="10"
+                                HorizontalAlignment="{Binding HAlignment}">
+                      <Border Width="28" Height="28" CornerRadius="14"
+                              Background="{StaticResource BrandAccentBrush}"
+                              IsVisible="{Binding !IsUser}"
+                              VerticalAlignment="Top">
+                        <TextBlock Text="R" FontSize="12" FontWeight="Bold"
+                                   Foreground="{StaticResource TextOnAccentBrush}"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                      </Border>
+                      <Border CornerRadius="14" Padding="14,10" MaxWidth="640"
+                              Background="{Binding BubbleColor}">
+                        <StackPanel Spacing="4">
+                          <TextBlock Text="{Binding Content}" FontSize="14"
+                                     TextWrapping="Wrap"
+                                     Foreground="{Binding TextColor}"/>
+                          <TextBlock Text="{Binding FormattedTime}" FontSize="10"
+                                     Foreground="{Binding TimeColor}"
+                                     HorizontalAlignment="Right"/>
+                        </StackPanel>
+                      </Border>
+                      <Border Width="28" Height="28" CornerRadius="14"
+                              Background="{StaticResource AccentClaudeBrush}"
+                              IsVisible="{Binding IsUser}"
+                              VerticalAlignment="Top">
+                        <TextBlock Text="U" FontSize="12" FontWeight="Bold"
+                                   Foreground="{StaticResource TextOnAccentBrush}"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                      </Border>
+                    </StackPanel>
+                  </StackPanel>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </Panel>
+        </ScrollViewer>
+
+        <!-- Typing indicator -->
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8"
+                    Margin="32,4,32,8" IsVisible="{Binding IsTyping}">
+          <Border Width="20" Height="20" CornerRadius="10"
+                  Background="{StaticResource BrandAccentBrush}">
+            <TextBlock Text="R" FontSize="10" FontWeight="Bold"
+                       Foreground="{StaticResource TextOnAccentBrush}"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <TextBlock Text="Agent is thinking…" FontSize="12"
+                     Foreground="{StaticResource TextSecondaryBrush}"
+                     VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <!-- Input bar -->
+        <Border Grid.Row="2" BorderThickness="0,1,0,0"
+                BorderBrush="{StaticResource DividerBrush}"
+                Padding="20,14"
+                Background="{StaticResource SurfaceBaseBrush}">
+          <StackPanel Spacing="8">
+            <ItemsControl ItemsSource="{Binding PendingAttachments}"
+                          IsVisible="{Binding HasPendingAttachments}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <WrapPanel Orientation="Horizontal"/>
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border CornerRadius="999" Padding="10,4"
+                          Margin="0,0,8,4"
+                          Background="{StaticResource SurfaceCardBrush}"
+                          BorderBrush="{StaticResource DividerBrush}"
+                          BorderThickness="1">
+                    <StackPanel Orientation="Horizontal" Spacing="6"
+                                VerticalAlignment="Center">
+                      <TextBlock Text="📎" FontSize="11" VerticalAlignment="Center"/>
+                      <TextBlock Text="{Binding Name}" FontSize="12"
+                                 FontWeight="SemiBold"
+                                 Foreground="{StaticResource TextPrimaryBrush}"
+                                 VerticalAlignment="Center"
+                                 TextTrimming="CharacterEllipsis" MaxWidth="220"/>
+                      <TextBlock Text="{Binding DisplaySize}" FontSize="11"
+                                 Foreground="{StaticResource TextSecondaryBrush}"
+                                 VerticalAlignment="Center"/>
+                      <Button Content="✕" FontSize="11" Padding="4,0"
+                              Background="Transparent" BorderThickness="0"
+                              Foreground="{StaticResource TextSecondaryBrush}"
+                              Command="{Binding $parent[ItemsControl].DataContext.RemoveAttachmentCommand}"
+                              CommandParameter="{Binding}"
+                              ToolTip.Tip="Remove"
+                              VerticalAlignment="Center"/>
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <TextBlock Text="{Binding AttachmentError}"
+                       IsVisible="{Binding AttachmentError,
+                                  Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                       Foreground="{StaticResource ErrorBrush}" FontSize="11"
+                       TextWrapping="Wrap"/>
+
+            <DockPanel>
+              <Button DockPanel.Dock="Left" Content="📎"
+                      Command="{Binding AttachFilesCommand}"
+                      Classes="ghost"
+                      FontSize="16" Padding="8,6"
+                      Margin="0,0,8,0" VerticalAlignment="Bottom"
+                      ToolTip.Tip="Attach files"/>
+              <Button DockPanel.Dock="Right" Content="Send"
+                      Command="{Binding SendMessageCommand}"
+                      Classes="accent pill"
+                      Padding="20,10" FontSize="14"
+                      Margin="8,0,0,0" VerticalAlignment="Bottom"/>
+              <TextBox Text="{Binding InputText, Mode=TwoWay}"
+                       Watermark="Type a message…  (Shift+Enter for newline)"
+                       Classes="chat" FontSize="14"
+                       AcceptsReturn="False" TextWrapping="Wrap"
+                       MinHeight="40" MaxHeight="120"
+                       x:Name="InputBox"
+                       KeyDown="InputBox_KeyDown"/>
+            </DockPanel>
+          </StackPanel>
+        </Border>
+      </Grid>
+    </Grid>
+
+    <!-- ══════════════════════════════════════════════════════════════
+         SLIDE-OVER DETAIL PANEL (Memories or Anchors)
+         Layered above everything when open. Click outside or X closes.
+         ══════════════════════════════════════════════════════════════ -->
+    <Panel IsVisible="{Binding DetailPanel.IsOpen}">
+      <!-- Backdrop -->
+      <Border Background="#88000000">
+        <Border.Styles>
+          <Style Selector="Border">
+            <Setter Property="Cursor" Value="Hand"/>
+          </Style>
+        </Border.Styles>
+        <Button Background="Transparent" BorderThickness="0"
+                HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                Command="{Binding DetailPanel.CloseCommand}"/>
+      </Border>
+
+      <!-- Panel itself -->
+      <Border HorizontalAlignment="Right" VerticalAlignment="Stretch"
+              Width="460"
+              Background="{StaticResource SurfaceCardBrush}"
+              BorderBrush="{StaticResource DividerBrush}"
+              BorderThickness="1,0,0,0"
+              BoxShadow="-12 0 32 0 #66000000">
+        <Grid RowDefinitions="Auto,*">
+          <Border Grid.Row="0" Padding="20,16"
+                  BorderThickness="0,0,0,1"
+                  BorderBrush="{StaticResource DividerBrush}">
+            <DockPanel>
+              <Button DockPanel.Dock="Right" Content="✕"
+                      Command="{Binding DetailPanel.CloseCommand}"
+                      Classes="ghost" FontSize="14" Padding="8,4"/>
+              <TextBlock Text="{Binding DetailPanel.Title}"
+                         FontSize="15" FontWeight="SemiBold"
+                         Foreground="{StaticResource TextPrimaryBrush}"
+                         VerticalAlignment="Center"/>
+            </DockPanel>
+          </Border>
+
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                        Padding="20,16">
+            <Panel>
+              <!-- Memories: Current Brain (latest) + History (older) -->
+              <StackPanel IsVisible="{Binding DetailPanel.ShowMemories}"
+                          Spacing="20">
+
+                <!-- Empty state -->
+                <Border IsVisible="{Binding DetailPanel.MemoriesEmpty}"
+                        Padding="20,28" CornerRadius="12"
+                        Background="{StaticResource SurfaceMutedBrush}"
+                        BorderBrush="{StaticResource DividerBrush}"
+                        BorderThickness="1">
+                  <StackPanel Spacing="10" HorizontalAlignment="Center">
+                    <TextBlock Text="🧠" FontSize="32"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="No memory snapshots yet"
+                               FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock TextWrapping="Wrap" TextAlignment="Center"
+                               MaxWidth="320" FontSize="12"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               Text="The agent compacts what it learned every 10 user turns. Each snapshot summarises new events and folds in prior summaries — the latest one is the agent's current memory; older ones stay as an immutable audit trail."/>
+                  </StackPanel>
+                </Border>
+
+                <!-- Current Brain -->
+                <StackPanel Spacing="8" IsVisible="{Binding DetailPanel.HasCurrentBrain}">
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Border Width="6" Height="6" CornerRadius="3"
+                            Background="{StaticResource SuccessBrush}"
+                            VerticalAlignment="Center"/>
+                    <TextBlock Text="CURRENT BRAIN" FontSize="10" FontWeight="Bold"
+                               Foreground="{StaticResource SuccessBrush}"
+                               VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding DetailPanel.CurrentBrain.RelativeTime}"
+                               FontSize="10"
+                               Foreground="{StaticResource TextTertiaryBrush}"
+                               VerticalAlignment="Center"/>
+                  </StackPanel>
+                  <Border Padding="16,14" CornerRadius="12"
+                          Background="{StaticResource SurfaceMutedBrush}"
+                          BorderBrush="{StaticResource SuccessBrush}"
+                          BorderThickness="1">
+                    <StackPanel Spacing="6">
+                      <TextBlock Text="{Binding DetailPanel.CurrentBrain.Content}"
+                                 FontSize="13" TextWrapping="Wrap"
+                                 Foreground="{StaticResource TextPrimaryBrush}"
+                                 FontFamily="Menlo, Consolas, monospace"/>
+                      <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+                        <TextBlock Text="{Binding DetailPanel.CurrentBrain.Range}"
+                                   FontSize="10"
+                                   Foreground="{StaticResource TextTertiaryBrush}"/>
+                        <TextBlock Text="·" FontSize="10"
+                                   Foreground="{StaticResource TextTertiaryBrush}"/>
+                        <TextBlock Text="{Binding DetailPanel.CurrentBrain.SizeLabel}"
+                                   FontSize="10"
+                                   Foreground="{StaticResource TextTertiaryBrush}"/>
+                      </StackPanel>
+                    </StackPanel>
+                  </Border>
+                </StackPanel>
+
+                <!-- History -->
+                <StackPanel Spacing="8" IsVisible="{Binding DetailPanel.HasHistory}">
+                  <TextBlock Text="HISTORY (SUPERSEDED)"
+                             FontSize="10" FontWeight="Bold"
+                             Foreground="{StaticResource TextTertiaryBrush}"/>
+                  <ItemsControl ItemsSource="{Binding DetailPanel.HistoryMemories}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border Margin="0,0,0,8" Padding="12,10" CornerRadius="8"
+                                Background="{StaticResource SurfaceMutedBrush}"
+                                BorderBrush="{StaticResource DividerBrush}"
+                                BorderThickness="1"
+                                Opacity="0.7">
+                          <StackPanel Spacing="4">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                              <TextBlock Text="{Binding Range}" FontSize="10"
+                                         Foreground="{StaticResource TextSecondaryBrush}"
+                                         VerticalAlignment="Center"/>
+                              <TextBlock Text="·" FontSize="10"
+                                         Foreground="{StaticResource TextTertiaryBrush}"/>
+                              <TextBlock Text="{Binding SizeLabel}" FontSize="10"
+                                         Foreground="{StaticResource TextTertiaryBrush}"/>
+                              <TextBlock Text="·" FontSize="10"
+                                         Foreground="{StaticResource TextTertiaryBrush}"/>
+                              <TextBlock Text="{Binding RelativeTime}" FontSize="10"
+                                         Foreground="{StaticResource TextTertiaryBrush}"/>
+                            </StackPanel>
+                            <TextBlock Text="{Binding Content}" FontSize="11"
+                                       TextWrapping="Wrap" MaxLines="3"
+                                       TextTrimming="CharacterEllipsis"
+                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                       FontFamily="Menlo, Consolas, monospace"/>
+                          </StackPanel>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </StackPanel>
+
+              <!-- Anchors section (empty state + list) -->
+              <StackPanel IsVisible="{Binding DetailPanel.ShowAnchors}" Spacing="12">
+                <Border IsVisible="{Binding DetailPanel.AnchorsEmpty}"
+                        Padding="20,28" CornerRadius="12"
+                        Background="{StaticResource SurfaceMutedBrush}"
+                        BorderBrush="{StaticResource DividerBrush}"
+                        BorderThickness="1">
+                  <StackPanel Spacing="10" HorizontalAlignment="Center">
+                    <TextBlock Text="🔗" FontSize="32"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="No anchors yet"
+                               FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock TextWrapping="Wrap" TextAlignment="Center"
+                               MaxWidth="320" FontSize="12"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               Text="Every batch of synced events is hashed (SHA-256), stored on Greenfield, and the hash is anchored on BSC. Send a message to start the chain."/>
+                  </StackPanel>
+                </Border>
+
+                <ItemsControl ItemsSource="{Binding DetailPanel.Anchors}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border Margin="0,0,0,10" Padding="14,12" CornerRadius="10"
+                            Background="{StaticResource SurfaceMutedBrush}"
+                            BorderBrush="{StaticResource DividerBrush}"
+                            BorderThickness="1">
+                      <StackPanel Spacing="6">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                          <Border Width="10" Height="10" CornerRadius="5"
+                                  Background="{Binding StatusColor}"
+                                  VerticalAlignment="Center"/>
+                          <TextBlock Text="{Binding Status}"
+                                     FontSize="12" FontWeight="SemiBold"
+                                     Foreground="{StaticResource TextPrimaryBrush}"
+                                     VerticalAlignment="Center"/>
+                          <TextBlock Text="·" FontSize="11"
+                                     Foreground="{StaticResource TextTertiaryBrush}"
+                                     VerticalAlignment="Center"/>
+                          <TextBlock Text="{Binding Range}"
+                                     FontSize="11"
+                                     Foreground="{StaticResource TextSecondaryBrush}"
+                                     VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <StackPanel Spacing="2">
+                          <TextBlock FontSize="11"
+                                     Foreground="{StaticResource TextSecondaryBrush}">
+                            <Run Text="hash "/>
+                            <Run Text="{Binding ShortHash}"
+                                 FontFamily="Menlo, Consolas, monospace"
+                                 Foreground="{StaticResource TextPrimaryBrush}"/>
+                          </TextBlock>
+                          <TextBlock FontSize="11"
+                                     Foreground="{StaticResource TextSecondaryBrush}"
+                                     IsVisible="{Binding HasBscTx}">
+                            <Run Text="tx "/>
+                            <Run Text="{Binding ShortTx}"
+                                 FontFamily="Menlo, Consolas, monospace"
+                                 Foreground="{StaticResource AccentClaudeBrush}"/>
+                          </TextBlock>
+                        </StackPanel>
+                        <TextBlock Text="{Binding RelativeTime}"
+                                   FontSize="10"
+                                   Foreground="{StaticResource TextTertiaryBrush}"/>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              </StackPanel>
+
+              <!-- Loading -->
+              <TextBlock Text="Loading…" FontSize="12"
+                         Foreground="{StaticResource TextTertiaryBrush}"
+                         IsVisible="{Binding DetailPanel.IsLoading}"
+                         HorizontalAlignment="Center" Margin="0,40"/>
+            </Panel>
+          </ScrollViewer>
+        </Grid>
+      </Border>
+    </Panel>
+  </Panel>
+</UserControl>

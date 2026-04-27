@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["nexus*"]
+
+[project]
+name = "nexus"
+version = "0.1.0"
+description = "Nexus: Self-evolving digital twin agent framework on BNB Chain (formerly rune-nexus / rune_twin)"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+    "nexus-core>=0.4.0",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+gemini = ["google-genai>=1.0.0"]
+openai = ["openai>=1.0.0"]
+anthropic = ["anthropic>=0.30.0"]
+all = ["google-genai>=1.0.0", "openai>=1.0.0", "anthropic>=0.30.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+nexus = "nexus.cli:cli_main"
+
+[tool.uv.sources]
+nexus-core = { workspace = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

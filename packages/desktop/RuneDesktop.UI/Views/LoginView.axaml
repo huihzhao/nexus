@@ -1,0 +1,70 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="RuneDesktop.UI.Views.LoginView"
+             Background="{StaticResource SurfaceBaseBrush}">
+
+  <Panel>
+    <!-- Same purple gradient that the passkey browser page uses, so the
+         hand-off between desktop and browser feels seamless. The rest
+         of the app is dark. -->
+    <Border Background="{StaticResource BrandPurpleGradient}"/>
+
+    <Border HorizontalAlignment="Center" VerticalAlignment="Center"
+            Width="380" Padding="40,42" CornerRadius="18"
+            Background="{StaticResource SurfaceCardBrush}"
+            BorderBrush="{StaticResource DividerBrush}" BorderThickness="1"
+            BoxShadow="0 24 64 0 #66000000">
+      <StackPanel Spacing="28">
+        <StackPanel Spacing="14" HorizontalAlignment="Center">
+          <Border Width="76" Height="76" CornerRadius="18"
+                  HorizontalAlignment="Center"
+                  Background="{StaticResource BrandAccentBrush}"
+                  BoxShadow="0 6 18 0 #29F0B90B">
+            <TextBlock Text="R" FontSize="36" FontWeight="Bold"
+                       Foreground="{StaticResource TextOnAccentBrush}"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <TextBlock Text="Rune Protocol"
+                     FontSize="22" FontWeight="SemiBold"
+                     Foreground="{StaticResource TextPrimaryBrush}"
+                     HorizontalAlignment="Center"/>
+          <TextBlock Text="Your AI agent, your data."
+                     FontSize="13"
+                     Foreground="{StaticResource TextSecondaryBrush}"
+                     HorizontalAlignment="Center"/>
+        </StackPanel>
+
+        <StackPanel Spacing="12">
+          <Button Content="Get Started"
+                  Command="{Binding LoginWithPasskeyCommand}"
+                  Classes="accent pill"
+                  HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                  Padding="0,14" FontSize="15"
+                  IsEnabled="{Binding !IsLoading}"/>
+
+          <StackPanel Spacing="8" IsVisible="{Binding IsLoading}">
+            <TextBlock Text="Continue in your browser to verify with Passkey…"
+                       Foreground="{StaticResource TextSecondaryBrush}"
+                       FontSize="13" TextWrapping="Wrap"
+                       HorizontalAlignment="Center" TextAlignment="Center"/>
+            <Button Content="Cancel" Command="{Binding CancelPasskeyCommand}"
+                    Classes="ghost" HorizontalAlignment="Center"
+                    FontSize="13"/>
+          </StackPanel>
+
+          <Border Background="#3A2A2C" CornerRadius="6" Padding="12,8"
+                  IsVisible="{Binding ErrorMessage,
+                            Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+            <TextBlock Text="{Binding ErrorMessage}"
+                       Foreground="{StaticResource ErrorBrush}"
+                       FontSize="12" TextWrapping="Wrap"/>
+          </Border>
+        </StackPanel>
+
+        <TextBlock Text="Powered by BNB Chain"
+                   Foreground="{StaticResource TextTertiaryBrush}"
+                   FontSize="11" HorizontalAlignment="Center"/>
+      </StackPanel>
+    </Border>
+  </Panel>
+</UserControl>

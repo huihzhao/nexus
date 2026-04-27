@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexus-server"
+version = "0.1.0"
+description = "Nexus FastAPI server: multi-tenant HTTP frontend for the Nexus DigitalTwin"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Nexus Team", email = "team@nexus.ai"}
+]
+dependencies = [
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
+    "pyjwt>=2.8",
+    "webauthn>=2.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+    "nexus-core>=0.4.0",
+    "nexus>=0.1.0",
+    "google-genai>=1.0.0",
+    "httpx>=0.25.0",
+    # Used by attachment_distiller to pull text out of PDF uploads. Soft
+    # dependency in code (the distiller falls back to a binary stub if
+    # missing) but a hard dep here so a fresh `uv sync` Just Works for
+    # the typical product flow where users attach papers / PDFs.
+    "pypdf>=4.0",
+    # Required by FastAPI to parse multipart/form-data on the
+    # /api/v1/files/upload endpoint (UploadFile depends on it). Without
+    # this, FastAPI raises at route-registration time, breaking every
+    # other route too — so it's a hard dep, not optional.
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+llm-extra = [
+    "openai>=1.0",
+    "anthropic>=0.7",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "ruff>=0.0.280",
+    "mypy>=1.0",
+]
+
+[project.scripts]
+nexus-server = "nexus_server.main:run_server"
+
+[tool.uv.sources]
+nexus-core = { workspace = true }
+nexus = { workspace = true }
+
+[tool.setuptools]
+packages = ["nexus_server"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "W", "I", "N"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false

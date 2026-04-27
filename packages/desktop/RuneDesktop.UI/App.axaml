@@ -1,0 +1,144 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="RuneDesktop.UI.App"
+             RequestedThemeVariant="Dark">
+
+  <Application.Resources>
+    <!-- ═════════════════════════════════════════════════════════════════
+         Dark theme colour tokens — modelled on Claude Desktop's dark mode.
+         Two anchor colours: Claude orange (#D97757) for primary accent,
+         BNB yellow (#F0B90B) reserved for the agent identity (logo, ERC
+         badge) so the chain identity always reads as "the agent" not "the
+         theme".
+         ═══════════════════════════════════════════════════════════════ -->
+
+    <!-- Surface layers — three depths so we can build cards/panels/popups -->
+    <Color x:Key="SurfaceBase">#1F2329</Color>           <!-- main background  -->
+    <Color x:Key="SurfaceCard">#262A31</Color>           <!-- cards / panels   -->
+    <Color x:Key="SurfaceRaised">#2D323A</Color>         <!-- input fields, hovered cards -->
+    <Color x:Key="SurfaceMuted">#1A1D22</Color>          <!-- subtle wells     -->
+
+    <!-- Text scale — warm off-white, never pure white -->
+    <Color x:Key="TextPrimary">#E8E6DC</Color>           <!-- headings, body   -->
+    <Color x:Key="TextSecondary">#A0A19B</Color>         <!-- metadata         -->
+    <Color x:Key="TextTertiary">#6B6E69</Color>          <!-- timestamps       -->
+    <Color x:Key="TextOnAccent">#1F2329</Color>          <!-- text on yellow/orange -->
+
+    <!-- Edges -->
+    <Color x:Key="Divider">#3A3D42</Color>
+    <Color x:Key="DividerStrong">#4B4F55</Color>
+
+    <!-- Accents -->
+    <Color x:Key="AccentClaude">#D97757</Color>          <!-- primary CTA, links -->
+    <Color x:Key="AccentClaudeHover">#E08A6B</Color>
+    <Color x:Key="BrandAccent">#F0B90B</Color>           <!-- BNB yellow — agent identity only -->
+    <Color x:Key="BrandPurpleStart">#667EEA</Color>      <!-- legacy login bg  -->
+    <Color x:Key="BrandPurpleEnd">#764BA2</Color>
+
+    <!-- Semantic -->
+    <Color x:Key="Success">#7DBC68</Color>
+    <Color x:Key="Warning">#E5B45A</Color>
+    <Color x:Key="Error">#E36B6B</Color>
+    <Color x:Key="Info">#9DCAE7</Color>
+
+    <SolidColorBrush x:Key="SurfaceBaseBrush" Color="{StaticResource SurfaceBase}"/>
+    <SolidColorBrush x:Key="SurfaceCardBrush" Color="{StaticResource SurfaceCard}"/>
+    <SolidColorBrush x:Key="SurfaceRaisedBrush" Color="{StaticResource SurfaceRaised}"/>
+    <SolidColorBrush x:Key="SurfaceMutedBrush" Color="{StaticResource SurfaceMuted}"/>
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="TextTertiaryBrush" Color="{StaticResource TextTertiary}"/>
+    <SolidColorBrush x:Key="TextOnAccentBrush" Color="{StaticResource TextOnAccent}"/>
+    <SolidColorBrush x:Key="DividerBrush" Color="{StaticResource Divider}"/>
+    <SolidColorBrush x:Key="DividerStrongBrush" Color="{StaticResource DividerStrong}"/>
+    <SolidColorBrush x:Key="AccentClaudeBrush" Color="{StaticResource AccentClaude}"/>
+    <SolidColorBrush x:Key="BrandAccentBrush" Color="{StaticResource BrandAccent}"/>
+    <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource Success}"/>
+    <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource Warning}"/>
+    <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource Error}"/>
+    <SolidColorBrush x:Key="InfoBrush" Color="{StaticResource Info}"/>
+
+    <!-- Bubble fills used by chat messages -->
+    <SolidColorBrush x:Key="BubbleAssistantBrush" Color="{StaticResource SurfaceCard}"/>
+    <SolidColorBrush x:Key="BubbleUserBrush" Color="{StaticResource AccentClaude}"/>
+
+    <!-- Login screen kept its purple gradient for visual continuity with
+         the passkey browser page; everywhere else is dark. -->
+    <LinearGradientBrush x:Key="BrandPurpleGradient"
+                         StartPoint="0%,0%" EndPoint="100%,100%">
+      <GradientStop Color="{StaticResource BrandPurpleStart}" Offset="0"/>
+      <GradientStop Color="{StaticResource BrandPurpleEnd}"   Offset="1"/>
+    </LinearGradientBrush>
+  </Application.Resources>
+
+  <Application.Styles>
+    <FluentTheme>
+      <FluentTheme.Palettes>
+        <ColorPaletteResources x:Key="Dark"
+                               Accent="#D97757"
+                               BaseHigh="#E8E6DC"
+                               BaseMedium="#A0A19B"
+                               BaseLow="#3A3D42"
+                               RegionColor="#1F2329"/>
+      </FluentTheme.Palettes>
+    </FluentTheme>
+
+    <!-- Chat-style TextBox: dark surface, soft border, accent on focus -->
+    <Style Selector="TextBox.chat">
+      <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+      <Setter Property="CaretBrush" Value="{StaticResource AccentClaudeBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource DividerBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="10"/>
+      <Setter Property="Padding" Value="12,10"/>
+    </Style>
+    <Style Selector="TextBox.chat:focus /template/ Border#PART_BorderElement">
+      <Setter Property="BorderBrush" Value="{StaticResource AccentClaudeBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+    </Style>
+
+    <!-- Pill button (Send / primary CTAs) -->
+    <Style Selector="Button.pill">
+      <Setter Property="CornerRadius" Value="999"/>
+      <Setter Property="Padding" Value="20,10"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+    <Style Selector="Button.accent">
+      <Setter Property="Background" Value="{StaticResource AccentClaudeBrush}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextOnAccentBrush}"/>
+    </Style>
+    <Style Selector="Button.accent:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#E08A6B"/>
+    </Style>
+
+    <!-- Ghost button for secondary actions -->
+    <Style Selector="Button.ghost">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+      <Setter Property="BorderThickness" Value="0"/>
+    </Style>
+    <Style Selector="Button.ghost:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}"/>
+    </Style>
+
+    <!-- Sidebar buttons (browse Memories / Anchors) -->
+    <Style Selector="Button.sidebar">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="HorizontalAlignment" Value="Stretch"/>
+      <Setter Property="HorizontalContentAlignment" Value="Left"/>
+      <Setter Property="Padding" Value="10,8"/>
+      <Setter Property="CornerRadius" Value="6"/>
+    </Style>
+    <Style Selector="Button.sidebar:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}"/>
+    </Style>
+
+    <!-- ScrollViewer thumbs: subtle on dark -->
+    <Style Selector="ScrollBar:vertical /template/ Thumb">
+      <Setter Property="Background" Value="#3A3D42"/>
+    </Style>
+  </Application.Styles>
+</Application>
