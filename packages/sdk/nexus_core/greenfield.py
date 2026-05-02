@@ -1,5 +1,5 @@
 """
-Greenfield Storage Client — decentralized object storage for Rune Protocol.
+Greenfield Storage Client — decentralized object storage for Nexus.
 
 Handles bulk data (sessions, artifacts, task payloads) that's too large
 for on-chain storage. BSC stores SHA-256 content hashes as pointers;
@@ -574,8 +574,13 @@ class GreenfieldClient:
 
     # ── Persistent daemon (module-level singleton) ──
     _daemon_proc = None      # subprocess.Popen
-    _daemon_lock = None      # threading.Lock
+    _daemon_lock = None      # threading.Lock — guards spawn + every read/write
     _daemon_req_id = 0
+    # Process-wide kill switch. Once set, ``_ensure_daemon`` short-
+    # circuits and fresh writes go straight to local fallback. Set by
+    # ``shutdown()`` during teardown so the post-Ctrl-C burst of
+    # write-behind tasks doesn't keep respawning the daemon.
+    _shutting_down = False
 
     def _find_daemon_script(self) -> Optional[str]:
         """Find the greenfield_daemon.cjs script."""
@@ -589,58 +594,117 @@ class GreenfieldClient:
         return None
 
     def _ensure_daemon(self) -> bool:
-        """Start the persistent Node.js daemon if not running."""
+        """Start the persistent Node.js daemon if not running.
+
+        Race-safe: the spawn is performed under the daemon lock so
+        two concurrent first-callers can't both spawn a process. Old
+        code released the lock before checking, which is what
+        produced "Starting Greenfield daemon" twice in a row in
+        production logs.
+        """
         import subprocess, threading
 
         if GreenfieldClient._daemon_lock is None:
             GreenfieldClient._daemon_lock = threading.Lock()
 
-        # Check if already running
-        if GreenfieldClient._daemon_proc is not None:
-            if GreenfieldClient._daemon_proc.poll() is None:
-                return True  # still alive
-            else:
-                GreenfieldClient._daemon_proc = None  # died, restart
-
-        script = self._find_daemon_script()
-        if not script:
+        # Refuse to spawn during shutdown — the burst of pending
+        # write-behind tasks would otherwise keep restarting the
+        # daemon while the parent process is mid-teardown.
+        if GreenfieldClient._shutting_down:
             return False
 
-        env = os.environ.copy()
-        if self._private_key:
-            env["NEXUS_PRIVATE_KEY"] = self._private_key
-        env["NEXUS_GREENFIELD_BUCKET"] = self._bucket_name
-        env["NEXUS_GREENFIELD_NETWORK"] = self._network
+        # Fast-path: already running, skip the lock.
+        if (GreenfieldClient._daemon_proc is not None
+                and GreenfieldClient._daemon_proc.poll() is None):
+            return True
 
-        logger.info("Starting Greenfield daemon: %s", script)
-        GreenfieldClient._daemon_proc = subprocess.Popen(
-            ["node", script],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            bufsize=0,
-        )
+        with GreenfieldClient._daemon_lock:
+            # Re-check under the lock. Another thread may have just
+            # spawned the daemon while we were waiting.
+            if GreenfieldClient._shutting_down:
+                return False
+            if (GreenfieldClient._daemon_proc is not None
+                    and GreenfieldClient._daemon_proc.poll() is None):
+                return True
+            GreenfieldClient._daemon_proc = None  # died (or never started)
 
-        # Wait for "ready" message (blocking, but only once)
-        try:
-            ready_line = GreenfieldClient._daemon_proc.stdout.readline()
-            if ready_line:
-                ready = json.loads(ready_line.decode().strip())
-                if ready.get("ok"):
-                    logger.info("Greenfield daemon ready: %d SPs, bucket=%s",
-                                ready.get("sps", 0), ready.get("bucket", "?"))
-                    return True
-                else:
+            script = self._find_daemon_script()
+            if not script:
+                return False
+
+            env = os.environ.copy()
+            if self._private_key:
+                env["NEXUS_PRIVATE_KEY"] = self._private_key
+            env["NEXUS_GREENFIELD_BUCKET"] = self._bucket_name
+            env["NEXUS_GREENFIELD_NETWORK"] = self._network
+
+            logger.info("Starting Greenfield daemon: %s", script)
+            GreenfieldClient._daemon_proc = subprocess.Popen(
+                ["node", script],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                bufsize=0,
+            )
+
+            # Wait for "ready" — daemon may print Node.js banners or
+            # warnings before the JSON ready line. Skip non-JSON lines
+            # until we hit one we can parse, capping at 10 attempts so
+            # a totally garbled startup doesn't hang forever.
+            try:
+                for _ in range(10):
+                    ready_line = GreenfieldClient._daemon_proc.stdout.readline()
+                    if not ready_line:
+                        break  # EOF — daemon died during startup
+                    text = ready_line.decode(errors="replace").strip()
+                    if not text or not text.startswith("{"):
+                        # Banner / warning / blank — keep reading.
+                        logger.debug("Greenfield daemon stdout pre-ready: %s", text[:120])
+                        continue
+                    ready = json.loads(text)
+                    if ready.get("ok"):
+                        logger.info(
+                            "Greenfield daemon ready: %d SPs, bucket=%s",
+                            ready.get("sps", 0), ready.get("bucket", "?"),
+                        )
+                        return True
                     logger.error("Greenfield daemon init failed: %s", ready.get("error"))
-                    return False
-        except Exception as e:
-            logger.error("Greenfield daemon startup error: %s", e)
-            GreenfieldClient._daemon_proc.kill()
+                    break
+            except Exception as e:
+                logger.error("Greenfield daemon startup error: %s", e)
+
+            try:
+                GreenfieldClient._daemon_proc.kill()
+            except Exception:
+                pass
             GreenfieldClient._daemon_proc = None
             return False
 
-        return False
+    @classmethod
+    def shutdown(cls) -> None:
+        """Mark the singleton as shut down and kill the daemon.
+
+        Safe to call from teardown paths — pending write-behind tasks
+        that race past this call will see ``_shutting_down`` and fall
+        back to local storage instead of trying to respawn the
+        daemon. The WAL on the chain backend then ensures these
+        writes are replayed on the next process start.
+        """
+        cls._shutting_down = True
+        proc = cls._daemon_proc
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    proc.kill()
+        except Exception:
+            pass
+        cls._daemon_proc = None
 
     def _run_js_op(self, op: str, object_name: str, hex_data: str = None, timeout: int = None) -> dict:
         """Send a command to the persistent daemon (or fall back to legacy subprocess).
@@ -655,11 +719,16 @@ class GreenfieldClient:
         return self._run_js_op_legacy(op, object_name, hex_data, timeout)
 
     def _run_daemon_op(self, op: str, object_name: str, hex_data: str = None, timeout: int = None) -> dict:
-        """Send command to daemon via stdin, read response from stdout."""
-        import select
+        """Send command to daemon via stdin, read response from stdout.
 
+        Timeout policy: the JS daemon's axios timeout is 60s for puts
+        (delegateUploadObject). We give ourselves a small grace window
+        on top (75s) so an upload that finishes just past axios's
+        deadline still makes it back. Old 120s default kept calls
+        hanging long after the SP had given up.
+        """
         if timeout is None:
-            timeout = 15 if op in ("get", "head", "list") else 120
+            timeout = 15 if op in ("get", "head", "list") else 75
 
         with GreenfieldClient._daemon_lock:
             # Check daemon is still alive
@@ -678,16 +747,40 @@ class GreenfieldClient:
                 GreenfieldClient._daemon_proc.stdin.write(line.encode())
                 GreenfieldClient._daemon_proc.stdin.flush()
 
-                # Read response with timeout
+                # Read response with timeout. Skip non-JSON lines —
+                # the daemon may emit warnings / banners on stdout
+                # that aren't part of the protocol. Old code blindly
+                # json.loads()'d the first line and broke on those
+                # ("Expecting property name enclosed in double quotes").
                 import threading
                 result = [None]
                 error = [None]
 
                 def read_resp():
                     try:
-                        resp_line = GreenfieldClient._daemon_proc.stdout.readline()
-                        if resp_line:
-                            result[0] = json.loads(resp_line.decode().strip())
+                        for _ in range(20):  # cap on garbage tolerance
+                            resp_line = GreenfieldClient._daemon_proc.stdout.readline()
+                            if not resp_line:
+                                error[0] = "EOF from daemon"
+                                return
+                            text = resp_line.decode(errors="replace").strip()
+                            if not text:
+                                continue
+                            if not text.startswith("{"):
+                                logger.debug(
+                                    "Greenfield daemon non-JSON line: %s", text[:120],
+                                )
+                                continue
+                            try:
+                                result[0] = json.loads(text)
+                                return
+                            except json.JSONDecodeError as je:
+                                logger.debug(
+                                    "Greenfield daemon malformed JSON, skipping: %s (%s)",
+                                    text[:120], je,
+                                )
+                                continue
+                        error[0] = "no parseable response after 20 lines"
                     except Exception as e:
                         error[0] = str(e)
 
@@ -696,8 +789,11 @@ class GreenfieldClient:
                 t.join(timeout=timeout)
 
                 if t.is_alive():
-                    logger.error("Daemon response timeout (%ds) for %s %s — killing daemon", timeout, op, object_name)
-                    # Kill hung daemon so next call restarts it
+                    logger.warning(
+                        "Daemon response timeout (%ds) for %s %s — killing daemon, "
+                        "writes will retry via WAL on restart",
+                        timeout, op, object_name,
+                    )
                     try:
                         GreenfieldClient._daemon_proc.kill()
                     except Exception:
@@ -711,7 +807,7 @@ class GreenfieldClient:
                 return result[0] or {"ok": False, "error": "No response from daemon"}
 
             except (BrokenPipeError, OSError) as e:
-                logger.warning("Daemon pipe broken, will restart: %s", e)
+                logger.info("Daemon pipe broken, will restart on next call: %s", e)
                 GreenfieldClient._daemon_proc = None
                 return {"ok": False, "error": f"Daemon pipe error: {e}"}
 
@@ -815,7 +911,23 @@ class GreenfieldClient:
         result = await asyncio.to_thread(self._run_js_op, "put", canonical, data.hex())
         if not result.get("ok"):
             error = result.get("error", "unknown")
-            logger.warning("Greenfield put failed: %s", error)
+            # Distinguish "Greenfield is slow / unavailable" (transient,
+            # we have a local fallback) from "fallback also blew up"
+            # (genuinely critical). The vast majority of timeouts are
+            # the SP being briefly slow under load; logging them at
+            # WARNING with "failed" wording is misleading because the
+            # operation is about to succeed via local fallback.
+            level = (
+                logging.INFO
+                if "Timeout" in error or "ECONNABORTED" in error
+                else logging.WARNING
+            )
+            logger.log(
+                level,
+                "Greenfield put slow/unavailable, using local fallback "
+                "(path=%s, %d bytes): %s",
+                object_path or canonical, len(data), error,
+            )
             self._ensure_local_fallback()
             return self._put_local(data, chash, object_path=object_path)
 
@@ -1000,7 +1112,15 @@ class GreenfieldClient:
             return -1
 
     async def close(self):
-        """Clean up HTTP sessions."""
+        """Clean up HTTP sessions and the shared daemon.
+
+        Sets the singleton's ``_shutting_down`` flag first so any
+        write-behind tasks racing past this call fall through to
+        local fallback instead of trying to respawn the daemon.
+        """
+        # Stop accepting new daemon work + kill the running daemon.
+        type(self).shutdown()
+
         if hasattr(self, "_http_session") and self._http_session:
             self._http_session.close()
             self._http_session = None

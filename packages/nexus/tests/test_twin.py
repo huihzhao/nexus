@@ -1,5 +1,5 @@
 """
-Tests for Rune Nexus.
+Tests for Nexus.
 
 Uses MockBackend and a mock LLM — no external API calls needed.
 """
@@ -142,6 +142,44 @@ async def test_twin_chat():
 
 
 @pytest.mark.asyncio
+async def test_chat_writes_episode_to_typed_store():
+    """Regression for the EpisodesStore data-flow disconnect:
+    twin.chat used to never write to ``self.episodes`` so the
+    desktop "Episodes 0 items" namespace pill was always empty
+    and chat-time autobiographical recall had no source.
+
+    Verifies that after one chat turn, the typed EpisodesStore
+    has a row for the active thread, and after another turn in
+    the same thread the row updates in place (turn_count++).
+    """
+    twin = make_twin()
+    await twin._initialize()
+
+    # Empty before the first turn.
+    assert len(twin.episodes.all()) == 0
+
+    await twin.chat("I like sushi")
+    eps = twin.episodes.all()
+    assert len(eps) == 1, (
+        "twin.chat did not upsert an Episode into the typed "
+        "EpisodesStore — the desktop namespace pill will stay 0."
+    )
+    ep = eps[0]
+    # Active thread on a fresh twin starts as a session_xxx id.
+    assert ep.session_id == twin._thread_id
+    assert (ep.extra or {}).get("turn_count") == 1
+    assert "sushi" in ep.summary
+
+    await twin.chat("And ramen too")
+    eps = twin.episodes.all()
+    # Same session → same row, turn count bumped, summary updated.
+    assert len(eps) == 1
+    assert (eps[0].extra or {}).get("turn_count") == 2
+    assert "ramen" in eps[0].summary
+    await twin.close()
+
+
+@pytest.mark.asyncio
 async def test_session_persistence():
     rune = make_rune()
     llm = MockLLMClient()
@@ -179,6 +217,7 @@ async def test_commands():
 
 @pytest.mark.asyncio
 async def test_memory_evolver():
+    """Phase D 续: extract_and_store writes to facts_store, not rune.memory."""
     rune = make_rune()
     evolver = MemoryEvolver(rune, "test", MockLLMClient().complete)
     stored = await evolver.extract_and_store([
@@ -186,8 +225,8 @@ async def test_memory_evolver():
         {"role": "assistant", "content": "Noted!"},
     ])
     assert len(stored) == 2
-    all_mem = await rune.memory.list_all("test")
-    assert len(all_mem) == 2
+    facts = evolver.facts_store.all()
+    assert len(facts) == 2
 
 
 @pytest.mark.asyncio
@@ -207,7 +246,9 @@ async def test_persona_evolver():
     evolver = PersonaEvolver(rune, "test", MockLLMClient().complete)
     await evolver.load_persona("Default persona.")
     result = await evolver.evolve(["User likes sushi"], {"total_skills": 1})
-    assert "version" in result
+    # Phase D: typed PersonaStore now owns the version pointer; no
+    # more numeric ``version`` from the legacy artifact path.
+    assert "typed_version" in result
     assert "sushi" in evolver.current_persona.lower()
 
 
@@ -309,54 +350,56 @@ async def test_evolution_engine_learns_skills_from_chat():
 
 
 # ── Progressive Retrieval Tests ─────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_search_compact():
-    """search_compact() returns lightweight MemoryCompact objects."""
-    rune = make_rune()
-    # Store some memories
-    await rune.memory.add("User likes sushi", "test", metadata={"category": "preference", "importance": 4})
-    await rune.memory.add("User plans Tokyo trip in March", "test", metadata={"category": "fact", "importance": 3})
-    await rune.memory.add("User prefers window seats", "test", metadata={"category": "preference", "importance": 2})
-
-    compacts = await rune.memory.search_compact("sushi food", "test", top_k=10)
-    assert len(compacts) == 3
-    # Check they are compact (have preview, not full content)
-    for c in compacts:
-        assert c.memory_id
-        assert c.preview
-        assert len(c.preview) <= 83  # 80 chars + "..."
+# Phase D 续 #2: rewritten against FactsStore (single source of truth).
 
 
-@pytest.mark.asyncio
-async def test_get_by_ids():
-    """get_by_ids() fetches full entries for specific IDs."""
-    rune = make_rune()
-    id1 = await rune.memory.add("Memory one", "test")
-    id2 = await rune.memory.add("Memory two", "test")
-    await rune.memory.add("Memory three", "test")
+def test_search_compact(tmp_path):
+    """FactsStore.search_compact returns lightweight summaries."""
+    from nexus_core.memory import Fact, FactsStore
+    fs = FactsStore(base_dir=tmp_path)
+    fs.upsert(Fact(content="User likes sushi", category="preference", importance=4))
+    fs.upsert(Fact(content="User plans Tokyo trip in March", category="fact", importance=3))
+    fs.upsert(Fact(content="User prefers window seats", category="preference", importance=2))
 
-    results = await rune.memory.get_by_ids([id1, id2], "test")
-    assert len(results) == 2
-    contents = {e.content for e in results}
+    hits = fs.search_compact("sushi food", top_k=10)
+    assert len(hits) >= 1
+    for h in hits:
+        assert h["key"]
+        assert h["preview"]
+        assert len(h["preview"]) <= 80
+
+
+def test_get_by_keys(tmp_path):
+    """FactsStore.get fetches full Fact rows by key."""
+    from nexus_core.memory import Fact, FactsStore
+    fs = FactsStore(base_dir=tmp_path)
+    f1 = Fact(content="Memory one")
+    f2 = Fact(content="Memory two")
+    f3 = Fact(content="Memory three")
+    fs.bulk_add([f1, f2, f3])
+
+    results = [fs.get(f1.key), fs.get(f2.key)]
+    contents = {r.content for r in results if r}
     assert "Memory one" in contents
     assert "Memory two" in contents
 
 
 @pytest.mark.asyncio
-async def test_progressive_recall():
-    """MemoryEvolver.recall_relevant() uses progressive retrieval."""
+async def test_progressive_recall(tmp_path):
+    """MemoryEvolver.recall_relevant() uses progressive retrieval.
+    Phase D 续: facts_store-backed."""
+    from nexus_core.memory import Fact, FactsStore
     rune = make_rune()
-    evolver = MemoryEvolver(rune, "test", MockLLMClient().complete)
+    facts_store = FactsStore(base_dir=tmp_path)
+    evolver = MemoryEvolver(
+        rune, "test", MockLLMClient().complete, facts_store=facts_store,
+    )
 
-    # Store memories
     for text in ["User likes sushi", "User plans Tokyo trip", "User prefers window seats"]:
-        await rune.memory.add(text, "test", metadata={"category": "fact", "importance": 3})
+        facts_store.upsert(Fact(content=text, category="fact", importance=3))
 
-    # recall_relevant should work with progressive retrieval
     results = await evolver.recall_relevant("sushi food", top_k=5)
     assert len(results) > 0
-    # All results should have content
     for r in results:
         assert "content" in r
 
@@ -364,13 +407,18 @@ async def test_progressive_recall():
 # ── Knowledge Compiler Tests ────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_knowledge_compiler_basic():
-    """KnowledgeCompiler clusters memories and compiles articles."""
+async def test_knowledge_compiler_basic(tmp_path):
+    """KnowledgeCompiler clusters facts and compiles articles.
+    Phase D 续: facts_store is the input source."""
+    from nexus_core.memory import Fact, FactsStore
     rune = make_rune()
-    compiler = KnowledgeCompiler(rune, "test", MockLLMClient().complete)
+    facts_store = FactsStore(base_dir=tmp_path / "facts")
+    compiler = KnowledgeCompiler(
+        rune, "test", MockLLMClient().complete,
+        facts_store=facts_store,
+    )
 
-    # Store enough memories to trigger compilation (min_memories=6)
-    memories = [
+    items = [
         ("User likes sushi", "preference"),
         ("User loves salmon nigiri", "preference"),
         ("User plans Tokyo trip in March", "fact"),
@@ -378,8 +426,8 @@ async def test_knowledge_compiler_basic():
         ("User prefers window seats", "preference"),
         ("User works at BNB Chain", "fact"),
     ]
-    for content, category in memories:
-        await rune.memory.add(content, "test", metadata={"category": category, "importance": 3})
+    for content, category in items:
+        facts_store.upsert(Fact(content=content, category=category, importance=3))
 
     result = await compiler.compile(min_memories=6)
     assert result["status"] == "compiled"
@@ -388,12 +436,17 @@ async def test_knowledge_compiler_basic():
 
 
 @pytest.mark.asyncio
-async def test_knowledge_compiler_skip_low_count():
-    """KnowledgeCompiler skips compilation when too few memories."""
+async def test_knowledge_compiler_skip_low_count(tmp_path):
+    """KnowledgeCompiler skips compilation when too few facts."""
+    from nexus_core.memory import Fact, FactsStore
     rune = make_rune()
-    compiler = KnowledgeCompiler(rune, "test", MockLLMClient().complete)
+    facts_store = FactsStore(base_dir=tmp_path / "facts")
+    compiler = KnowledgeCompiler(
+        rune, "test", MockLLMClient().complete,
+        facts_store=facts_store,
+    )
 
-    await rune.memory.add("Single memory", "test")
+    facts_store.upsert(Fact(content="Single fact"))
     result = await compiler.compile(min_memories=10)
     assert result["status"] == "skipped"
 
@@ -418,15 +471,23 @@ async def test_knowledge_compiler_context():
 
 
 @pytest.mark.asyncio
-async def test_reflection_includes_knowledge():
-    """EvolutionEngine.trigger_reflection() includes knowledge compilation."""
+async def test_reflection_includes_knowledge(tmp_path):
+    """EvolutionEngine.trigger_reflection() includes knowledge compilation.
+    Phase D 续: facts_store is the input source for both reflection
+    memory texts and knowledge compilation."""
+    from nexus_core.memory import Fact, FactsStore
     rune = make_rune()
-    engine = EvolutionEngine(rune, "test", MockLLMClient().complete, "Default.")
+    facts_store = FactsStore(base_dir=tmp_path / "facts")
+    engine = EvolutionEngine(
+        rune, "test", MockLLMClient().complete, "Default.",
+        facts_store=facts_store,
+    )
     await engine.initialize()
 
-    # Store enough memories for compilation
     for text in ["sushi", "nigiri", "tokyo", "shibuya", "window seat", "BNB Chain"]:
-        await rune.memory.add(f"User likes {text}", "test", metadata={"category": "fact", "importance": 3})
+        facts_store.upsert(Fact(
+            content=f"User likes {text}", category="fact", importance=3,
+        ))
 
     reflection = await engine.trigger_reflection()
     assert "knowledge_compilation" in reflection

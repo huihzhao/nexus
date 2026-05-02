@@ -60,7 +60,7 @@ def _load_abi(name: str) -> list:
 
 class BSCClient:
     """
-    Web3.py client for Rune Protocol contracts on BSC.
+    Web3.py client for Nexus contracts on BSC.
 
     Handles all on-chain reads and writes for:
       - Agent state roots (AgentStateExtension)

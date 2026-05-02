@@ -30,122 +30,18 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from ..core.providers import MemoryProvider
 from .registry import AdapterRegistry
 
 
-class RuneCrewStorage:
-    """
-    CrewAI-compatible memory storage backed by Rune.
-
-    CrewAI's Memory class delegates storage operations to a pluggable
-    storage backend. This class implements that interface using Rune's
-    MemoryProvider for on-chain persistence.
-
-    Architecture:
-        CrewAI Memory.encode()
-            → RuneCrewStorage.save()
-                → MemoryProvider.add()
-                    → Greenfield (full content) + BSC (memory root hash)
-
-    All memories persist across crew runs, machines, and runtimes.
-    """
-
-    def __init__(
-        self,
-        memory_provider: MemoryProvider,
-        agent_id: str = "crewai-agent",
-    ):
-        """
-        Args:
-            memory_provider: Rune memory provider for persistence.
-            agent_id: Agent identifier (maps to ERC-8004 tokenId).
-        """
-        self._provider = memory_provider
-        self._agent_id = agent_id
-
-    # ── CrewAI RAGStorage / LTMStorage interface ──────────────────
-
-    def save(
-        self,
-        value: Any,
-        metadata: Optional[dict] = None,
-        agent: Optional[str] = None,
-    ) -> str:
-        """
-        Save a memory (CrewAI encode operation).
-
-        Args:
-            value: Content to memorize (string or dict).
-            metadata: Optional metadata (scope, importance, categories).
-            agent: Optional agent name override.
-
-        Returns:
-            Memory ID.
-        """
-        content = str(value) if not isinstance(value, str) else value
-        aid = agent or self._agent_id
-
-        return _run_sync(self._provider.add(
-            content=content,
-            agent_id=aid,
-            metadata=metadata or {},
-        ))
-
-    def search(
-        self,
-        query: str,
-        limit: int = 5,
-        score_threshold: float = 0.0,
-        agent: Optional[str] = None,
-    ) -> list[dict]:
-        """
-        Search memories (CrewAI recall operation).
-
-        Args:
-            query: Search query.
-            limit: Maximum results.
-            score_threshold: Minimum relevance score.
-            agent: Optional agent name override.
-
-        Returns:
-            List of memory dicts with 'content', 'score', 'metadata'.
-        """
-        aid = agent or self._agent_id
-
-        entries = _run_sync(self._provider.search(
-            query=query,
-            agent_id=aid,
-            top_k=limit,
-        ))
-
-        results = []
-        for entry in entries:
-            if entry.score >= score_threshold:
-                results.append({
-                    "id": entry.memory_id,
-                    "content": entry.content,
-                    "score": entry.score,
-                    "metadata": entry.metadata,
-                    "created_at": entry.created_at,
-                })
-        return results
-
-    def reset(self, agent: Optional[str] = None) -> None:
-        """
-        Clear all memories (CrewAI reset operation).
-
-        Warning: This deletes all memories for the agent.
-        """
-        aid = agent or self._agent_id
-        entries = _run_sync(self._provider.list_all(aid))
-        for entry in entries:
-            _run_sync(self._provider.delete(entry.memory_id, aid))
-
-    def delete(self, memory_id: str, agent: Optional[str] = None) -> None:
-        """Delete a specific memory (CrewAI forget operation)."""
-        aid = agent or self._agent_id
-        _run_sync(self._provider.delete(memory_id, aid))
+# ─────────────────────────────────────────────────────────────────────
+# RuneCrewStorage — DELETED in Phase D 续 #2
+# ─────────────────────────────────────────────────────────────────────
+#
+# The CrewAI memory bridge was removed when MemoryProvider was
+# deleted. CrewAI integration now needs to talk to the typed Phase J
+# namespace stores directly (``FactsStore`` / etc.). If/when CrewAI
+# Memory parity is rebuilt, it should be a thin wrapper over those
+# typed stores — not a re-introduction of the old MemoryProvider.
 
 
 class RuneCrewCheckpointStorage:
@@ -204,4 +100,6 @@ def _run_sync(coro):
         return future.result(timeout=60)
 
 
-AdapterRegistry.register("crewai", RuneCrewStorage)
+# Phase D 续 #2: ``RuneCrewStorage`` was removed; the adapter
+# registration is gone with it. Re-register here once a typed-store
+# CrewAI memory bridge exists.

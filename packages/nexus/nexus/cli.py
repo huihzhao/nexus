@@ -49,7 +49,7 @@ def banner(name: str, agent_id: str, provider: str, model: str, chain_mode: bool
     storage = f"BNB Chain ({network})" if chain_mode else "Local"
     print(f"""
 {GOLD}{BOLD}╔══════════════════════════════════════════════════════════╗
-║                    Rune Nexus                             ║
+║                    Nexus                             ║
 ║          Self-Evolving AI Avatar on BNBChain             ║
 ╚══════════════════════════════════════════════════════════╝{RESET}
 
@@ -294,10 +294,10 @@ async def main_loop(args):
     greenfield_bucket = _env("NEXUS_GREENFIELD_BUCKET", "nexus-agent-state")
 
     if chain_mode:
-        print(f"\n{GOLD}Initializing Rune Nexus (chain mode: {network})...{RESET}")
+        print(f"\n{GOLD}Initializing Nexus (chain mode: {network})...{RESET}")
         print(f"  {DIM}Loading ERC-8004 identity...{RESET}")
     else:
-        print(f"\n{DIM}Initializing Rune Nexus (local mode)...{RESET}")
+        print(f"\n{DIM}Initializing Nexus (local mode)...{RESET}")
 
     # ── Tool config ──
     tavily_key = _env("TAVILY_API_KEY", "")
@@ -379,7 +379,7 @@ async def main_loop(args):
     finally:
         await twin.close()
         storage_desc = f"on BNB Chain ({network})" if chain_mode else "locally"
-        print(f"{GREEN}Rune Nexus state persisted {storage_desc}. See you next time!{RESET}\n")
+        print(f"{GREEN}Nexus state persisted {storage_desc}. See you next time!{RESET}\n")
 
 
 def cli_main():
@@ -387,7 +387,7 @@ def cli_main():
     env_file = _load_dotenv()
 
     parser = argparse.ArgumentParser(
-        description="Rune Nexus — Self-Evolving AI Avatar",
+        description="Nexus — Self-Evolving AI Avatar",
         epilog="All options can also be set via .env file (see .env.example)",
     )
     parser.add_argument("--name", default="", help="Display name (env: TWIN_NAME)")

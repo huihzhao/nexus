@@ -194,6 +194,48 @@ def init_db() -> None:
         "ON twin_chain_events(user_id, status)"
     )
 
+    # ── nexus_sessions (multi-session per user) ─────────────────────
+    # Each row is one logical "conversation thread" — analogous to
+    # ChatGPT's left-side chat list or Cowork's task list. The user
+    # can keep many parallel threads with the same agent; the server
+    # routes /llm/chat to the right one via the ``session_id`` field
+    # the client passes in.
+    #
+    # ``id`` is a short opaque token (twin's _thread_id format —
+    # ``session_xxxxxxxx``) so it lines up with what twin's EventLog
+    # already stamps onto each row's ``session_id`` column. That keeps
+    # the join from this table → twin event_log a literal string match
+    # without any indirection layer.
+    #
+    # ``title`` is the human-readable label shown in the sidebar. We
+    # auto-generate one from the first user message after a few turns
+    # (see sessions.maybe_autotitle); operators / users can rename via
+    # PATCH /api/v1/sessions/{id}.
+    #
+    # ``archived`` is a soft-delete flag. We never hard-delete because:
+    #   * twin's event_log still has the messages; deleting the row
+    #     would orphan them and confuse the audit trail.
+    #   * operators sometimes want to un-archive a thread they thought
+    #     they were done with.
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS nexus_sessions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL,
+            last_message_at TIMESTAMP,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_nexus_sessions_user "
+        "ON nexus_sessions(user_id, archived, last_message_at DESC)"
+    )
+
     conn.commit()
     conn.close()
     logger.info("Database initialized")

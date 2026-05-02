@@ -19,7 +19,7 @@ PASSKEY_PAGE_HTML = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rune Protocol - Passkey Authentication</title>
+    <title>Nexus - Passkey Authentication</title>
     <script src="https://unpkg.com/@simplewebauthn/browser@9.0.1/dist/bundle/index.umd.min.js"></script>
     <style>
         * {
@@ -282,7 +282,7 @@ PASSKEY_PAGE_HTML = """<!DOCTYPE html>
     <div class="container">
         <div class="header">
             <div class="logo">R</div>
-            <h1>Rune Protocol</h1>
+            <h1>Nexus</h1>
             <p>Secure authentication with passkeys</p>
         </div>
 
@@ -573,7 +573,7 @@ PASSKEY_PAGE_HTML = """<!DOCTYPE html>
                 // Tighten the page chrome a bit and show a "from desktop" hint
                 const headerP = document.querySelector('.header p');
                 if (headerP) {
-                    headerP.textContent = 'Continue to Rune Protocol on your desktop';
+                    headerP.textContent = 'Continue to Nexus on your desktop';
                 }
                 // Default to register for first-time users; the mode toggle
                 // is still visible so returning users can flip to Sign In.

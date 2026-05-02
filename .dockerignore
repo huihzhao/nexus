@@ -1,0 +1,47 @@
+# Stuff Docker should never copy into the build context — keeps the
+# image small and avoids stale local state poisoning the build.
+
+# Build artefacts
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/htmlcov
+**/.coverage
+**/.mypy_cache
+**/.ruff_cache
+**/dist
+**/build
+**/*.egg-info
+
+# Node stuff that creeps into the SDK skills tree during local dev
+**/node_modules
+
+# Local SQLite + uploads + per-user twin state — these belong to the
+# DEPLOYED instance's /data volume, not the source tree.
+**/rune_server.db
+**/rune_server.db-*
+**/.nexus
+**/.nexus_server
+**/twins
+**/uploads
+**/.rune_cache
+
+# Dotnet / desktop project — the server image doesn't need any of it.
+packages/desktop
+
+# Local env files (we mount .env via docker-compose, not COPY)
+**/.env
+**/.env.local
+**/.env.development
+
+# Editor / git
+.git
+.gitignore
+.vscode
+.idea
+**/*.swp
+**/.DS_Store
+
+# Logs
+**/*.log
+**/logs

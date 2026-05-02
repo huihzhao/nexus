@@ -14,6 +14,7 @@ Tool Use:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -26,8 +27,28 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Maximum tool call rounds to prevent infinite loops
-MAX_TOOL_ROUNDS = 10
+# Maximum tool call rounds to prevent infinite loops. 10 was generous
+# enough that one stuck tool (e.g. an `npx` first-run download timing
+# out + the LLM retrying the same install with a different identifier)
+# could keep the chat surface waiting for several minutes. 5 still
+# covers all real multi-step tool flows we've seen, and caps worst-case
+# wall time at ~MAX_TOOL_ROUNDS × per-tool budget.
+MAX_TOOL_ROUNDS = 5
+
+# Hard ceiling on a single tool execution. Tools that already have
+# their own internal timeouts (skill installer, file generator) just
+# return early — this is the belt-and-braces upper bound so a tool
+# that forgets to set its own timeout can't pin the chat. The LLM
+# sees a clean ToolResult(success=False) on timeout and can move on.
+PER_TOOL_TIMEOUT_SECONDS = 90.0
+
+# Hard ceiling on a single LLM round-trip. The provider SDK calls run
+# inside ``loop.run_in_executor`` so a stuck network on the provider's
+# side would otherwise pin the chat surface forever (the executor
+# thread is just blocked on a socket — Python doesn't interrupt it).
+# 90s is well above the p99 of normal completions (Gemini Pro with
+# thinking + tools is ~5-15s for chat-length prompts).
+LLM_CALL_TIMEOUT_SECONDS = 90.0
 
 
 class LLMClient:
@@ -72,6 +93,8 @@ class LLMClient:
         max_tokens: int = 2048,
         json_mode: bool = False,
         tools: Optional["ToolRegistry"] = None,
+        thinking_emitter=None,
+        **_extra,
     ) -> str:
         """Chat with the LLM, optionally using tools.
 
@@ -82,24 +105,42 @@ class LLMClient:
           4. Loop continues until LLM produces a text response (or MAX_TOOL_ROUNDS)
 
         When no tools are provided, behaves exactly as before.
+
+        ``thinking_emitter`` (optional ``ThinkingEmitter``):
+            Receives provider-specific reasoning telemetry — Gemini's
+            "thinking" tokens, tool decisions, retries — as live
+            ``reasoning`` / ``tool_call`` events. Twin passes its own
+            emitter through; tests / CLI callers can ignore the param.
+
+        ``**_extra`` swallows future kwargs so callers from older
+        versions (or future ones) don't break the call site if a new
+        knob is added at the LLMClient layer.
         """
         self._ensure_client()
 
         if not tools:
             # No tools — use the simple path (unchanged from original)
-            return await self._chat_simple(messages, system, temperature, max_tokens, json_mode)
+            return await self._chat_simple(
+                messages, system, temperature, max_tokens, json_mode,
+                thinking_emitter=thinking_emitter,
+            )
 
         # Tool-enabled path
         return await self._chat_with_tool_loop(
             messages, system, temperature, max_tokens, tools,
+            thinking_emitter=thinking_emitter,
         )
 
     async def _chat_simple(
         self, messages, system, temperature, max_tokens, json_mode=False,
+        thinking_emitter=None,
     ) -> str:
         """Simple chat without tools — original behavior."""
         if self.provider == LLMProvider.GEMINI:
-            return await self._chat_gemini(messages, system, temperature, max_tokens, json_mode=json_mode)
+            return await self._chat_gemini(
+                messages, system, temperature, max_tokens,
+                json_mode=json_mode, thinking_emitter=thinking_emitter,
+            )
         elif self.provider == LLMProvider.ANTHROPIC:
             return await self._chat_anthropic(messages, system, temperature, max_tokens)
         else:
@@ -114,12 +155,19 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
         tools: "ToolRegistry",
+        thinking_emitter=None,
     ) -> str:
         """Multi-turn tool loop: LLM calls tools, we execute, feed back results.
 
         Returns the final text response after all tool calls are resolved.
+
+        ``thinking_emitter`` receives a ``tool_call`` event before each
+        execution and a ``tool_result`` event with success / latency
+        after, so the desktop's live thinking panel can show the loop
+        as it unfolds rather than only the final text.
         """
         from nexus_core.tools.base import ToolCall
+        import time as _time
 
         tool_defs = tools.get_definitions()
         logger.info(
@@ -134,6 +182,7 @@ class LLMClient:
             # Call LLM with tools
             response = await self._call_with_tools(
                 working_messages, system, temperature, max_tokens, tool_defs,
+                thinking_emitter=thinking_emitter,
             )
 
             # Check if LLM wants to call tools
@@ -150,7 +199,55 @@ class LLMClient:
                 )
 
                 logger.info("Tool call [round %d]: %s(%s)", round_num + 1, tool_call.name, tool_call.arguments)
-                result = await tools.execute(tool_call)
+                if thinking_emitter is not None:
+                    try:
+                        thinking_emitter.emit(
+                            "tool_call", f"Calling {tool_call.name}",
+                            content=str(tool_call.arguments)[:200],
+                            metadata={
+                                "tool": tool_call.name,
+                                "round": round_num + 1,
+                                "arguments": tool_call.arguments,
+                            },
+                        )
+                    except Exception:
+                        pass
+                tool_t0 = _time.time()
+                try:
+                    result = await asyncio.wait_for(
+                        tools.execute(tool_call),
+                        timeout=PER_TOOL_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    # Treat a timed-out tool the same as a failed one
+                    # so the LLM gets a clean signal and chooses a
+                    # different path. Without this the call would hang
+                    # the whole chat surface — exactly the symptom that
+                    # first surfaced as "Agent is thinking…" forever
+                    # when `npx`/marketplace installs got stuck.
+                    from nexus_core.tools.base import ToolResult
+                    result = ToolResult(
+                        success=False,
+                        output=(
+                            f"Tool {tool_call.name} timed out after "
+                            f"{PER_TOOL_TIMEOUT_SECONDS:.0f}s. Try a different "
+                            f"approach or ask the user to do it manually."
+                        ),
+                    )
+                if thinking_emitter is not None:
+                    try:
+                        thinking_emitter.emit(
+                            "tool_result",
+                            f"{tool_call.name} {'returned' if result.success else 'failed'}",
+                            content=result.to_str()[:200],
+                            metadata={
+                                "tool": tool_call.name,
+                                "success": result.success,
+                            },
+                            duration_ms=int((_time.time() - tool_t0) * 1000),
+                        )
+                    except Exception:
+                        pass
                 tool_calls_log.append({
                     "tool": tool_call.name,
                     "args": tool_call.arguments,
@@ -184,6 +281,7 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
         tool_defs: list[dict],
+        thinking_emitter=None,
     ) -> dict:
         """Call LLM with tool definitions. Returns unified response format.
 
@@ -194,7 +292,10 @@ class LLMClient:
             }
         """
         if self.provider == LLMProvider.GEMINI:
-            return await self._call_gemini_tools(messages, system, temperature, max_tokens, tool_defs)
+            return await self._call_gemini_tools(
+                messages, system, temperature, max_tokens, tool_defs,
+                thinking_emitter=thinking_emitter,
+            )
         elif self.provider == LLMProvider.ANTHROPIC:
             return await self._call_anthropic_tools(messages, system, temperature, max_tokens, tool_defs)
         else:
@@ -204,6 +305,7 @@ class LLMClient:
 
     async def _call_gemini_tools(
         self, messages, system, temperature, max_tokens, tool_defs,
+        thinking_emitter=None,
     ) -> dict:
         """Gemini function calling.
 
@@ -213,6 +315,9 @@ class LLMClient:
             generate text about tools instead of actually calling them.
           - tool_config=AUTO tells Gemini it MAY call functions (default behavior
             can be text-only on some model versions).
+          - When ``thinking_emitter`` is set, we enable Gemini's
+            ``include_thoughts`` so reasoning tokens come back in
+            separate parts; we forward them as ``reasoning`` events.
         """
         from google.genai import types
         import asyncio
@@ -231,7 +336,7 @@ class LLMClient:
         # Convert messages to Gemini format (filter out tool-loop messages)
         contents = self._messages_to_gemini_contents(messages)
 
-        config = types.GenerateContentConfig(
+        gen_kwargs = dict(
             system_instruction=system or None,
             temperature=temperature,
             max_output_tokens=max_tokens,
@@ -243,6 +348,14 @@ class LLMClient:
                 ),
             ),
         )
+        if thinking_emitter is not None:
+            try:
+                gen_kwargs["thinking_config"] = types.ThinkingConfig(
+                    include_thoughts=True,
+                )
+            except Exception:
+                pass
+        config = types.GenerateContentConfig(**gen_kwargs)
 
         def _call():
             try:
@@ -257,7 +370,17 @@ class LLMClient:
                 raise
 
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, _call)
+        try:
+            response = await asyncio.wait_for(
+                loop.run_in_executor(None, _call),
+                timeout=LLM_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Gemini tool call timed out after %.0fs",
+                LLM_CALL_TIMEOUT_SECONDS,
+            )
+            return {"text": "", "tool_calls": []}
 
         # Parse Gemini response for tool calls or text
         if not response.candidates:
@@ -265,11 +388,30 @@ class LLMClient:
             return {"text": "", "tool_calls": []}
 
         candidate = response.candidates[0]
+        # Defensive: when Gemini blocks a response (safety filter,
+        # citation issue, etc.) candidate.content can be None — and
+        # iterating its .parts would NPE inside the chat loop, bubble
+        # up as 502 Bad Gateway to the desktop. Treat blocked
+        # responses as "no tool calls, no text" so the loop returns
+        # cleanly and the LLM caller can see the empty result.
+        if candidate.content is None or not getattr(candidate.content, "parts", None):
+            finish_reason = getattr(candidate, "finish_reason", None)
+            logger.warning(
+                "Gemini returned no parts (finish_reason=%s) — likely blocked",
+                finish_reason,
+            )
+            return {"text": "", "tool_calls": []}
+
         tool_calls = []
         text_parts = []
+        thought_parts = []
 
         for part in candidate.content.parts:
-            if hasattr(part, 'function_call') and part.function_call:
+            if getattr(part, "thought", False):
+                txt = getattr(part, "text", "") or ""
+                if txt:
+                    thought_parts.append(txt)
+            elif hasattr(part, 'function_call') and part.function_call:
                 fc = part.function_call
                 args = dict(fc.args) if fc.args else {}
                 tool_calls.append({
@@ -280,6 +422,21 @@ class LLMClient:
                 logger.info("Gemini requested tool: %s(%s)", fc.name, args)
             elif hasattr(part, 'text') and part.text:
                 text_parts.append(part.text)
+
+        if thinking_emitter is not None and thought_parts:
+            try:
+                joined = "\n\n".join(thought_parts)
+                thinking_emitter.emit(
+                    "reasoning", "Gemini reasoning",
+                    content=joined[:1500],
+                    metadata={
+                        "model": self.model,
+                        "thought_chunks": len(thought_parts),
+                        "thought_chars": len(joined),
+                    },
+                )
+            except Exception as e:
+                logger.debug("thinking emit failed: %s", e)
 
         if not tool_calls:
             logger.debug("Gemini chose text response (no tool calls)")
@@ -552,6 +709,7 @@ class LLMClient:
     async def _chat_gemini(
         self, messages, system, temperature, max_tokens,
         json_mode: bool = False,
+        thinking_emitter=None,
     ) -> str:
         from google.genai import types
         import asyncio
@@ -564,14 +722,28 @@ class LLMClient:
                 parts=[types.Part(text=msg["content"])],
             ))
 
-        config = types.GenerateContentConfig(
+        # Gemini 2.5 thinking mode: ask the model to reason explicitly
+        # and return those thoughts in a separate part of the response.
+        # We surface them via the thinking_emitter so the desktop's
+        # live cognition panel can show the chain-of-thought in real
+        # time. ``include_thoughts=True`` is what causes Gemini to
+        # actually emit thought parts (default is False).
+        gen_kwargs = dict(
             system_instruction=system or None,
             temperature=temperature,
             max_output_tokens=max_tokens,
-            # Force structured JSON output when requested — prevents empty
-            # responses from Gemini on extraction prompts.
             response_mime_type="application/json" if json_mode else None,
         )
+        if thinking_emitter is not None:
+            try:
+                gen_kwargs["thinking_config"] = types.ThinkingConfig(
+                    include_thoughts=True,
+                )
+            except Exception:
+                # Older google-genai versions don't have ThinkingConfig
+                # — fall through and treat thinking as best-effort.
+                pass
+        config = types.GenerateContentConfig(**gen_kwargs)
 
         def _call():
             response = self._client.models.generate_content(
@@ -579,6 +751,42 @@ class LLMClient:
                 contents=contents,
                 config=config,
             )
+            # Stream out any thought parts to the emitter BEFORE we
+            # return — the desktop wants to render reasoning before
+            # the final reply lands. Best-effort: a missing field on
+            # an older Gemini version just falls through.
+            if thinking_emitter is not None:
+                try:
+                    thoughts = []
+                    if hasattr(response, "candidates") and response.candidates:
+                        cand = response.candidates[0]
+                        # Same defensive check as _call_gemini_tools:
+                        # blocked responses set content to None, which
+                        # would NPE on .parts and bubble up as 502.
+                        if (
+                            hasattr(cand, "content")
+                            and cand.content is not None
+                            and getattr(cand.content, "parts", None)
+                        ):
+                            for part in cand.content.parts:
+                                if getattr(part, "thought", False):
+                                    txt = getattr(part, "text", "") or ""
+                                    if txt:
+                                        thoughts.append(txt)
+                    if thoughts:
+                        joined = "\n\n".join(thoughts)
+                        thinking_emitter.emit(
+                            "reasoning", "Gemini reasoning",
+                            content=joined[:1500],
+                            metadata={
+                                "model": self.model,
+                                "thought_chunks": len(thoughts),
+                                "thought_chars": len(joined),
+                            },
+                        )
+                except Exception as e:
+                    logger.debug("thinking emit failed: %s", e)
+
             # Gemini can return None/empty when blocked by safety filters
             # or when the model has nothing to say. Return empty string
             # so callers can handle it gracefully.
@@ -596,7 +804,16 @@ class LLMClient:
             return text
 
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _call)
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _call),
+                timeout=LLM_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Gemini call timed out after %.0fs", LLM_CALL_TIMEOUT_SECONDS,
+            )
+            return ""
 
     async def _chat_anthropic(self, messages, system, temperature, max_tokens) -> str:
         response = await self._client.messages.create(

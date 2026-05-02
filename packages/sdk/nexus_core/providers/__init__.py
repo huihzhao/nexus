@@ -1,24 +1,26 @@
 """
-Rune Protocol — Concrete Provider Implementations.
+Nexus — Concrete Provider Implementations.
 
 Each provider implements the corresponding ABC from core.providers,
 using a StorageBackend for actual persistence.
 
     SessionProviderImpl  — checkpoint save/load with parent linking
-    MemoryProviderImpl   — semantic memory with local search engine
     ArtifactProviderImpl — versioned file storage with manifests
     TaskProviderImpl     — A2A task lifecycle
+    ImpressionProviderImpl — peer-to-peer attestation
+
+Phase D 续 #2: ``MemoryProviderImpl`` was deleted. Use the typed
+Phase J namespace stores (``FactsStore`` / etc.) from
+``nexus_core.memory`` instead.
 """
 
 from .session import SessionProviderImpl
-from .memory import MemoryProviderImpl
 from .artifact import ArtifactProviderImpl
 from .task import TaskProviderImpl
 from .impression import ImpressionProviderImpl
 
 __all__ = [
     "SessionProviderImpl",
-    "MemoryProviderImpl",
     "ArtifactProviderImpl",
     "TaskProviderImpl",
     "ImpressionProviderImpl",

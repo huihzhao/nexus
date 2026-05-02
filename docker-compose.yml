@@ -1,0 +1,70 @@
+# Nexus server — production deployment via docker compose.
+#
+# Two services:
+#   1. nexus-server — the FastAPI app. Persistent state on /data volume.
+#   2. caddy        — reverse proxy with automatic HTTPS. Uses nip.io
+#                     to get a free Let's Encrypt cert without owning
+#                     a domain (you'll need ${PUBLIC_IP}.nip.io to
+#                     resolve to your VPS).
+#
+# WebAuthn passkey requires HTTPS unless the origin is localhost. With
+# IP-only deployment the trick is to use a "hostname-encoded" service
+# like nip.io (or sslip.io / xip.io). $PUBLIC_IP=1.2.3.4 →
+# https://1-2-3-4.nip.io routes to your VPS, gets a real Let's Encrypt
+# cert, and WebAuthn treats it as a normal HTTPS origin.
+
+services:
+  nexus-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nexus-server:latest
+    container_name: nexus-server
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      # The reverse proxy is hitting us over plain HTTP on the docker
+      # bridge; X-Forwarded-* headers from Caddy are how we know the
+      # actual external scheme/host. uvicorn is started with
+      # --proxy-headers --forwarded-allow-ips=*  inside the Dockerfile.
+      - SERVER_PORT=8001
+    volumes:
+      # /data persistence — survives container rebuilds. The agent
+      # installs new skills + MCP servers here at chat time, so
+      # losing this volume = losing all learned tools.
+      - nexus-data:/data
+    networks:
+      - nexus-net
+    # No `ports:` here — Caddy is the only thing the host exposes.
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: nexus-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"     # required for ACME http-01 challenge
+      - "443:443"   # actual HTTPS
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data        # cert storage (Let's Encrypt account + certs)
+      - caddy-config:/config    # caddy autosaves config
+    environment:
+      # Caddyfile reads ${HOSTNAME} from this — set it in .env.production
+      # to your nip.io hostname (e.g. 1-2-3-4.nip.io).
+      - HOSTNAME=${HOSTNAME}
+    networks:
+      - nexus-net
+    depends_on:
+      - nexus-server
+
+volumes:
+  nexus-data:
+    # Named volume — `docker volume inspect nexus-data` shows the host
+    # path. For backups: `tar czf nexus-backup.tgz <that path>`.
+  caddy-data:
+  caddy-config:
+
+networks:
+  nexus-net:
+    driver: bridge

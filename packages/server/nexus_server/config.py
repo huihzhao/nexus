@@ -1,4 +1,4 @@
-"""Configuration management for Rune Server.
+"""Configuration management for Nexus Server.
 
 Loads all server settings from environment variables with sensible defaults.
 Organized by functional area:
@@ -38,7 +38,7 @@ class ServerConfig:
 
     # WebAuthn
     WEBAUTHN_RP_ID: str = os.getenv("WEBAUTHN_RP_ID", "localhost")
-    WEBAUTHN_RP_NAME: str = os.getenv("WEBAUTHN_RP_NAME", "Rune Protocol")
+    WEBAUTHN_RP_NAME: str = os.getenv("WEBAUTHN_RP_NAME", "Nexus")
     WEBAUTHN_ORIGIN: str = os.getenv("WEBAUTHN_ORIGIN", "http://localhost:3000")
 
     # LLM Configuration

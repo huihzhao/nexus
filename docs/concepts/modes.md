@@ -138,8 +138,8 @@ from the top bar.
 | Run server in dev without spending testnet gas | Just don't set `SERVER_PRIVATE_KEY` — automatic local mode |
 | Force a particular user into local mode | `UPDATE users SET chain_agent_id = NULL WHERE id = ?` (forces re-bootstrap which will fail without prereqs) |
 | Add a non-custodial mode | New code in `twin_manager._resolve_chain_kwargs` to extract per-user wallet from JWT or a `wallets` table |
-| Run BSC mainnet | Set `RUNE_NETWORK=bsc-mainnet` + `RUNE_MAINNET_RPC=...` + the mainnet contract addresses |
-| Test chain mode without spending gas | Use a fake `RuneChainClient` via `chain_proxy._chain_client_test_override` |
+| Run BSC mainnet | Set `NEXUS_NETWORK=bsc-mainnet` + `NEXUS_MAINNET_RPC=...` + the mainnet contract addresses |
+| Test chain mode without spending gas | Use a fake `BSCClient` via `chain_proxy._chain_client_test_override` |
 
 ## Chain mode requirements (env)
 

@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:views="clr-namespace:RuneDesktop.UI.Views"
         x:Class="RuneDesktop.UI.Views.MainWindow"
-        Title="Rune Protocol"
+        Title="Nexus"
         WindowStartupLocation="CenterScreen"
         Width="1280" Height="800"
         MinWidth="1024" MinHeight="640"
@@ -20,13 +20,41 @@
       <DockPanel>
         <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="10"
                     VerticalAlignment="Center">
+          <!-- Sidebar toggle (Cmd+\\). Hides/shows the entire session
+               rail — cleanest pattern for "I just want the chat
+               surface, no chrome". When the rail is hidden, this
+               button is the only way back. -->
+          <Button Classes="ghost"
+                  IsVisible="{Binding IsLoggedIn}"
+                  Command="{Binding SessionsVm.ToggleHiddenCommand}"
+                  ToolTip.Tip="Toggle session rail (Ctrl+\)"
+                  Padding="6,2"
+                  FontSize="14">
+            <TextBlock Text="☰"
+                       Foreground="{StaticResource TextPrimaryBrush}"/>
+          </Button>
+          <!-- Activity sidebar toggle. Hides/shows the chat surface's
+               internal 320 px column (identity card + state counters
+               + Browse buttons + activity stream). When hidden the
+               chat takes the full width up to the cognition column —
+               same pattern as Claude / Cowork's collapsible side
+               panes. -->
+          <Button Classes="ghost"
+                  IsVisible="{Binding IsLoggedIn}"
+                  Command="{Binding ChatVm.ToggleActivityHiddenCommand}"
+                  ToolTip.Tip="Toggle activity sidebar"
+                  Padding="6,2"
+                  FontSize="13">
+            <TextBlock Text="▤"
+                       Foreground="{StaticResource TextPrimaryBrush}"/>
+          </Button>
           <Border Width="28" Height="28" CornerRadius="6"
                   Background="{StaticResource BrandAccentBrush}">
-            <TextBlock Text="R" FontSize="15" FontWeight="Bold"
+            <TextBlock Text="N" FontSize="15" FontWeight="Bold"
                        Foreground="{StaticResource TextOnAccentBrush}"
                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
-          <TextBlock Text="Rune Protocol"
+          <TextBlock Text="Nexus"
                      FontSize="14" FontWeight="SemiBold"
                      Foreground="{StaticResource TextPrimaryBrush}"
                      VerticalAlignment="Center"/>
@@ -34,6 +62,17 @@
 
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
                     Spacing="12" VerticalAlignment="Center">
+          <!-- Cognition panel toggle (Cmd+Shift+\\). Hides the right
+               side column when the user wants more chat real estate. -->
+          <Button Classes="ghost"
+                  IsVisible="{Binding IsLoggedIn}"
+                  Command="{Binding ChatVm.Cognition.ToggleHiddenCommand}"
+                  ToolTip.Tip="Toggle cognition panel (Ctrl+Shift+\)"
+                  Padding="6,2"
+                  FontSize="13">
+            <TextBlock Text="◧"
+                       Foreground="{StaticResource TextPrimaryBrush}"/>
+          </Button>
           <!-- ERC-8004 token id pill — only when registered on chain -->
           <Border IsVisible="{Binding ChatVm.IsOnChain}"
                   CornerRadius="999" Padding="10,3"
@@ -53,20 +92,38 @@
             </StackPanel>
           </Border>
 
+          <!-- Only render StatusText when there's something noteworthy
+               to show (mid-bootstrap, errors, etc.). Happy-path silence
+               keeps the top bar from duplicating the ERC-8004 pill +
+               user pill. -->
           <TextBlock Text="{Binding StatusText}" FontSize="12"
                      Foreground="{StaticResource TextSecondaryBrush}"
                      VerticalAlignment="Center"
-                     TextTrimming="CharacterEllipsis" MaxWidth="380"/>
+                     TextTrimming="CharacterEllipsis" MaxWidth="380"
+                     IsVisible="{Binding StatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
 
-          <StackPanel Orientation="Horizontal" Spacing="8"
-                      IsVisible="{Binding IsLoggedIn}">
-            <Border Width="26" Height="26" CornerRadius="13"
+          <StackPanel Orientation="Horizontal" Spacing="10"
+                      IsVisible="{Binding IsLoggedIn}"
+                      ToolTip.Tip="{Binding UserId}">
+            <Border Width="28" Height="28" CornerRadius="14"
                     Background="{StaticResource AccentClaudeBrush}">
-              <TextBlock Text="{Binding UserName, FallbackValue=?}"
+              <TextBlock Text="{Binding UserInitial, FallbackValue=?}"
                          Foreground="{StaticResource TextOnAccentBrush}"
-                         FontSize="11" FontWeight="SemiBold"
+                         FontSize="12" FontWeight="SemiBold"
                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
+            <StackPanel Orientation="Vertical" Spacing="0"
+                        VerticalAlignment="Center">
+              <TextBlock Text="{Binding UserName, FallbackValue=Unknown}"
+                         FontSize="12" FontWeight="SemiBold"
+                         Foreground="{StaticResource TextPrimaryBrush}"
+                         TextTrimming="CharacterEllipsis" MaxWidth="180"/>
+              <TextBlock Text="{Binding UserShortId}"
+                         FontSize="10"
+                         FontFamily="Menlo, Consolas, monospace"
+                         Foreground="{StaticResource TextTertiaryBrush}"
+                         TextTrimming="CharacterEllipsis" MaxWidth="180"/>
+            </StackPanel>
             <Button Content="Sign out" Command="{Binding LogoutCommand}"
                     Classes="ghost" FontSize="12" Padding="6,2"/>
           </StackPanel>
@@ -80,8 +137,41 @@
       <views:LoginView DataContext="{Binding LoginVm}"
                        IsVisible="{Binding #RootWindow.DataContext.IsLoggedIn,
                                   Converter={x:Static BoolConverters.Not}}"/>
-      <views:ChatView DataContext="{Binding ChatVm}"
-                      IsVisible="{Binding #RootWindow.DataContext.IsLoggedIn}"/>
+
+      <!-- Logged-in surface: session rail (left, collapsible) +
+           ChatView (everything right of it). ChatView keeps its own
+           3-column inner layout (state sidebar / chat / cognition);
+           we don't reach into it from here. -->
+      <Grid IsVisible="{Binding #RootWindow.DataContext.IsLoggedIn}"
+            ColumnDefinitions="Auto,Auto,*">
+        <!-- Rail visibility = NOT IsHidden. When hidden, the
+             SessionRailView control's IsVisible is false; its
+             Width binding to RailWidth (which returns 0 when hidden)
+             also collapses the column track entirely. -->
+        <views:SessionRailView Grid.Column="0"
+                               DataContext="{Binding SessionsVm}"
+                               IsVisible="{Binding SessionsVm.IsHidden,
+                                           Converter={x:Static BoolConverters.Not}}"/>
+        <!-- Splitter between session rail and ChatView. Hidden when
+             the rail is collapsed to icon strip (dragging makes no
+             sense at 60px) OR completely hidden. -->
+        <GridSplitter Grid.Column="1" Width="4"
+                      ResizeBehavior="PreviousAndNext"
+                      ResizeDirection="Columns"
+                      Background="{StaticResource DividerBrush}"
+                      HorizontalAlignment="Stretch">
+          <GridSplitter.IsVisible>
+            <MultiBinding Converter="{x:Static BoolConverters.And}">
+              <Binding Path="SessionsVm.IsCollapsed"
+                       Converter="{x:Static BoolConverters.Not}"/>
+              <Binding Path="SessionsVm.IsHidden"
+                       Converter="{x:Static BoolConverters.Not}"/>
+            </MultiBinding>
+          </GridSplitter.IsVisible>
+        </GridSplitter>
+        <views:ChatView Grid.Column="2"
+                        DataContext="{Binding ChatVm}"/>
+      </Grid>
     </Panel>
   </Grid>
 </Window>

@@ -196,7 +196,7 @@ class TestPasskeyPage:
         resp = client.get("/auth/passkey-page")
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
-        assert "Rune Protocol" in resp.text
+        assert "Nexus" in resp.text
         assert "SimpleWebAuthnBrowser" in resp.text
 
     def test_passkey_page_contains_webauthn_js(self, client):
@@ -433,7 +433,10 @@ class TestToolLoop:
         seen_msgs: list[str] = []
 
         class FakeTwin:
-            async def chat(self, msg: str) -> str:
+            async def chat(self, msg: str, session_id=None, **kwargs) -> str:
+                # Phase Q: chat handler now passes session_id=. Accept
+                # it (and any future kwargs) so the mock keeps working
+                # without rewriting every test.
                 seen_msgs.append(msg)
                 return "twin-reply"
 
@@ -482,7 +485,7 @@ class TestToolLoop:
         from nexus_server import llm_gateway as gw
 
         class BoomTwin:
-            async def chat(self, msg: str) -> str:
+            async def chat(self, msg: str, session_id=None, **kwargs) -> str:
                 raise RuntimeError("twin imploded")
 
             async def close(self) -> None:

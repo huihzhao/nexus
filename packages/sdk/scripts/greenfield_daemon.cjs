@@ -64,6 +64,14 @@ let spEndpoint = null;
 let secondarySpAddresses = [];
 let authType = null;
 let ready = false;
+// Bucket's primary SP — must be resolved before first put. Different
+// from the chain-wide "first available SP" we pick at boot. If the
+// daemon talks to the wrong SP for a bucket, every put returns the
+// classic "Query failed with (6): No such bucket: unknown request"
+// because that SP simply doesn't host the bucket.
+let bucketPrimarySpAddr = null;
+let bucketPrimarySpEndpoint = null;
+let bucketResolved = false;
 
 async function init() {
   if (!PRIVATE_KEY) {
@@ -106,8 +114,78 @@ async function init() {
 
 // ── Operations (reuse initialized client) ──
 
+/**
+ * Resolve the bucket's PRIMARY SP and pin it as the default endpoint
+ * for object operations. In Greenfield each bucket lives on a
+ * specific primary SP; uploads MUST go to that SP. Old code relied
+ * on the JS SDK auto-selecting "first available SP" which produces
+ * the canonical "Query failed with (6): No such bucket" when the
+ * picked SP doesn't host the bucket. Idempotent — runs once.
+ */
+async function resolveBucketSp() {
+  if (bucketResolved) return true;
+  try {
+    // Try the modern bucket meta endpoint first; some SDK versions
+    // ship as `getBucketMeta`, others as `headBucket`. Both surface
+    // the bucket's primary SP id / address.
+    let info = null;
+    if (typeof client.bucket.getBucketMeta === "function") {
+      info = await client.bucket.getBucketMeta({ bucketName: BUCKET });
+    } else if (typeof client.bucket.headBucket === "function") {
+      info = await client.bucket.headBucket(BUCKET);
+    }
+    const bucketInfo = info?.bucketInfo
+      || info?.bucket_info
+      || info?.body?.bucketInfo
+      || info?.body?.bucket_info;
+
+    // Different SDK versions name the field differently; try them all.
+    const primarySpId = bucketInfo?.primarySpId
+      ?? bucketInfo?.primary_sp_id
+      ?? bucketInfo?.PrimarySpId
+      ?? bucketInfo?.globalVirtualGroupFamilyId; // fallback proxy
+
+    // Try to find the SP we already enumerated whose id matches.
+    const spListRes = await client.sp.getStorageProviders();
+    const spArray = Array.isArray(spListRes) ? spListRes : (spListRes.sps || []);
+    let primarySP = null;
+    if (primarySpId !== undefined && primarySpId !== null) {
+      primarySP = spArray.find(sp => {
+        const idCandidates = [sp.id, sp.Id, sp.spId, sp.sp_id]
+          .filter(v => v !== undefined && v !== null)
+          .map(v => String(v));
+        return idCandidates.includes(String(primarySpId));
+      });
+    }
+    // If we found the bucket's primary SP, pin its endpoint. Otherwise
+    // fall back to the chain-wide first SP we picked at boot.
+    if (primarySP) {
+      bucketPrimarySpAddr = primarySP.operatorAddress || primarySP.operator_address;
+      bucketPrimarySpEndpoint = primarySP.endpoint;
+      out({ id: 0, ok: true, info: "bucket-sp-resolved",
+            bucket: BUCKET, sp: bucketPrimarySpAddr, endpoint: bucketPrimarySpEndpoint });
+    } else {
+      bucketPrimarySpAddr = spAddr;
+      bucketPrimarySpEndpoint = spEndpoint;
+      out({ id: 0, ok: true, info: "bucket-sp-fallback",
+            bucket: BUCKET, sp: spAddr, reason: "primary SP id not found in SP list" });
+    }
+    bucketResolved = true;
+    return true;
+  } catch (e) {
+    // Bucket might not exist yet (first-write race) — leave the
+    // global default endpoint in place; doPut will fail loud and
+    // chain.py falls back to local with the descriptive error.
+    bucketPrimarySpAddr = spAddr;
+    bucketPrimarySpEndpoint = spEndpoint;
+    bucketResolved = true;
+    return false;
+  }
+}
+
 async function doPut(id, objectName, hexData) {
   const data = Buffer.from(hexData, "hex");
+  await resolveBucketSp();
 
   // Check if object already exists
   try {
@@ -127,24 +205,31 @@ async function doPut(id, objectName, hexData) {
     body.size = body.length;
     body.type = "application/octet-stream";
 
-    const uploadRes = await client.object.delegateUploadObject(
-      {
-        bucketName: BUCKET,
-        objectName: objectName,
-        body: body,
-        delegatedOpts: { visibility: VISIBILITY_PRIVATE },
-        timeout: 60000,
-      },
-      authType,
-    );
+    // Pass the resolved bucket primary SP endpoint explicitly so the
+    // SDK doesn't auto-select a wrong one. Different SDK versions
+    // name this option differently — try the common spellings.
+    const opts = {
+      bucketName: BUCKET,
+      objectName: objectName,
+      body: body,
+      delegatedOpts: { visibility: VISIBILITY_PRIVATE },
+      timeout: 60000,
+    };
+    if (bucketPrimarySpEndpoint) {
+      opts.endpoint = bucketPrimarySpEndpoint;
+      opts.spEndpoint = bucketPrimarySpEndpoint;
+    }
+    const uploadRes = await client.object.delegateUploadObject(opts, authType);
 
     if (uploadRes.code === 0 || uploadRes.statusCode === 200) {
       out({ id, ok: true, hash: objectName, size: data.length });
     } else {
-      out({ id, ok: false, error: `Upload failed: code=${uploadRes.code}, msg=${uploadRes.message}` });
+      out({ id, ok: false,
+            error: `Upload failed: code=${uploadRes.code}, msg=${uploadRes.message}, sp=${bucketPrimarySpAddr}` });
     }
   } catch (e) {
-    out({ id, ok: false, error: `put failed: ${e.message}` });
+    out({ id, ok: false,
+          error: `put failed: ${e.message} (sp=${bucketPrimarySpAddr})` });
   }
 }
 

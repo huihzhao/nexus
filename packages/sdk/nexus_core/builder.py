@@ -41,7 +41,6 @@ from .core.backend import StorageBackend
 from .core.flush import FlushPolicy
 from .core.providers import AgentRuntime
 from .providers.session import SessionProviderImpl
-from .providers.memory import MemoryProviderImpl
 from .providers.artifact import ArtifactProviderImpl
 from .providers.task import TaskProviderImpl
 from .providers.impression import ImpressionProviderImpl
@@ -179,10 +178,6 @@ class Builder:
 
         return AgentRuntime(
             sessions=SessionProviderImpl(
-                self._backend,
-                runtime_id=self._runtime_id,
-            ),
-            memory=MemoryProviderImpl(
                 self._backend,
                 runtime_id=self._runtime_id,
             ),

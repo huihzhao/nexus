@@ -35,7 +35,7 @@ logger = logging.getLogger("nexus_core.keystore")
 
 class Keystore:
     """
-    Unified wallet + agent identity manager for Rune Protocol.
+    Unified wallet + agent identity manager for Nexus.
 
     Encapsulates:
       - EVMWalletProvider: encrypted keystore (scrypt + AES-128-CTR)

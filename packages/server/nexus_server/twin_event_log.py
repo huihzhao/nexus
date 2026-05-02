@@ -222,7 +222,10 @@ def list_memory_compacts(user_id: str, limit: int = 50) -> list[dict]:
 
 
 def list_messages(
-    user_id: str, limit: int, before_idx: Optional[int] = None
+    user_id: str,
+    limit: int,
+    before_idx: Optional[int] = None,
+    session_id: Optional[str] = None,
 ) -> tuple[list[dict], int]:
     """Recent chat turns for the desktop's history pane.
 
@@ -231,6 +234,15 @@ def list_messages(
     param on /agent/messages). Each message is shaped like
     ``ChatMessageView`` so the existing endpoint Pydantic model
     serialises unchanged.
+
+    ``session_id`` filter:
+      * ``None``  — return all messages (legacy behaviour, used by tools
+        that don't care about thread boundaries).
+      * ``""``    — return only messages with empty session_id (the
+        synthetic "default" session for pre-multi-session chat history).
+      * any other — strict equality match against ``events.session_id``.
+    Total count respects the same filter so the sidebar's count badges
+    are coherent with what the user sees.
     """
     conn = _open_readonly(user_id)
     if conn is None:
@@ -241,10 +253,16 @@ def list_messages(
         if before_idx is not None:
             where += " AND idx < ?"
             params.append(int(before_idx))
+        if session_id is not None:
+            # Use COALESCE so rows from before the session_id column was
+            # populated (NULL) compare equal to '' — both represent the
+            # synthetic default session.
+            where += " AND COALESCE(session_id, '') = ?"
+            params.append(session_id)
         params.append(limit)
         rows = conn.execute(
             f"""
-            SELECT idx, event_type, content, timestamp
+            SELECT idx, event_type, content, timestamp, metadata
             FROM events
             WHERE {where}
             ORDER BY idx DESC
@@ -252,9 +270,15 @@ def list_messages(
             """,
             params,
         ).fetchall()
+        # Total count: same filter minus pagination cursor + limit.
+        count_where = "event_type IN ('user_message', 'assistant_response')"
+        count_params: list = []
+        if session_id is not None:
+            count_where += " AND COALESCE(session_id, '') = ?"
+            count_params.append(session_id)
         total = int(conn.execute(
-            "SELECT COUNT(*) FROM events "
-            "WHERE event_type IN ('user_message', 'assistant_response')"
+            f"SELECT COUNT(*) FROM events WHERE {count_where}",
+            count_params,
         ).fetchone()[0])
     except sqlite3.Error as e:
         logger.warning("list_messages failed for %s: %s", user_id, e)
@@ -265,15 +289,22 @@ def list_messages(
     # DESC fetch above so the LIMIT picks the *newest* N; flip back to
     # oldest-at-top for the desktop renderer.
     rows = list(reversed(rows))
-    msgs = [
-        {
+    msgs = []
+    for r in rows:
+        meta = _safe_json(r[4]) if len(r) > 4 else {}
+        # Attachments (Phase Q): user_message events store the
+        # structured attachment list under metadata.attachments;
+        # surface it on the wire so the desktop can render real chips.
+        attachments = meta.get("attachments") if isinstance(meta, dict) else None
+        if not isinstance(attachments, list):
+            attachments = []
+        msgs.append({
             "role": "user" if r[1] == "user_message" else "assistant",
             "content": r[2] or "",
             "timestamp": _ts_to_iso(r[3]),
             "sync_id": int(r[0]),
-        }
-        for r in rows
-    ]
+            "attachments": attachments,
+        })
     return msgs, total
 
 

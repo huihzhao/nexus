@@ -1,0 +1,55 @@
+# Caddyfile — reverse proxy with automatic HTTPS via Let's Encrypt.
+#
+# How automatic HTTPS works here: Caddy sees a hostname (not "localhost"
+# or an IP literal), tries an ACME http-01 challenge against ports
+# 80/443 on that hostname, and provisions a real certificate.
+#
+# For IP-only VPS deploys we use nip.io: any 4-digit IP encoded as
+# "1-2-3-4.nip.io" resolves to that IP. Let's Encrypt issues a cert
+# for nip.io subdomains, so WebAuthn passkeys work just like a real
+# domain. Set HOSTNAME=1-2-3-4.nip.io in .env.production where 1.2.3.4
+# is your VPS public IP.
+
+{$HOSTNAME} {
+	# Hide Caddy's "Server: Caddy" header — small thing, but standard
+	# practice for production-facing reverse proxies.
+	header {
+		-Server
+		# HSTS — once the desktop/browser has connected once, force
+		# HTTPS for the next year. Skip if you're still bouncing
+		# between hostnames during setup.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	}
+
+	# Pass everything to the FastAPI server. proxy headers + the
+	# Dockerfile's --proxy-headers flag let uvicorn see the actual
+	# client IP and HTTPS scheme through the reverse proxy.
+	reverse_proxy nexus-server:8001 {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+
+		# Long-lived SSE: /agent/thinking/stream pushes events for the
+		# whole life of a session. Default upstream timeout (10 min)
+		# would silently kill the desktop's live cognition feed.
+		flush_interval -1
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+		}
+	}
+
+	# Caddy's default access log = stderr; container logs pick it up.
+	log {
+		output stderr
+		format json
+	}
+}
+
+# Optional: redirect any other hostname (e.g. someone hitting the raw
+# IP) to the canonical nip.io URL. Comment out if you want raw-IP
+# access to fail closed.
+:80 {
+	redir https://{$HOSTNAME}{uri} permanent
+}

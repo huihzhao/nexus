@@ -1,5 +1,5 @@
 """
-Rune Protocol — StorageBackend ABC (Strategy Pattern).
+Nexus — StorageBackend ABC (Strategy Pattern).
 
 Defines HOW data is stored and retrieved. Each backend implements
 the same interface but with different storage engines:

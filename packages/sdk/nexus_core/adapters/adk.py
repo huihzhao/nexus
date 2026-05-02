@@ -1,25 +1,30 @@
 """
-Rune Protocol — Google ADK Adapter.
+Nexus — Google ADK Adapter.
 
-Thin wrappers that bridge ADK's native interfaces to Rune providers.
+Thin wrappers that bridge ADK's native interfaces to Nexus providers.
 Each class does ONLY two things: type conversion + delegation.
 No persistence logic lives here.
 
-    RuneSessionService   — ADK BaseSessionService  → rune.sessions
-    RuneMemoryService    — ADK BaseMemoryService   → rune.memory
-    RuneArtifactService  — ADK BaseArtifactService → rune.artifacts
+    NexusSessionService   — ADK BaseSessionService  → runtime.sessions
+    NexusArtifactService  — ADK BaseArtifactService → runtime.artifacts
+
+Phase D 续 #2: the ADK BaseMemoryService bridge (``NexusMemoryService``)
+was removed when MemoryProvider was deleted. ADK memory parity should
+be re-implemented as a thin wrapper over the typed Phase J namespace
+stores when needed.
 
 Usage:
-    from nexus_core import Rune
-    from nexus_core.adapters.adk import RuneSessionService, RuneMemoryService, RuneArtifactService
+    import nexus_core
+    from nexus_core.adapters.adk import (
+        NexusSessionService, NexusArtifactService,
+    )
 
-    rune = nexus_core.local()
+    runtime = nexus_core.local()
 
     runner = Runner(
         agent=my_agent,
-        session_service=RuneSessionService(rune.sessions),
-        memory_service=RuneMemoryService(rune.memory),
-        artifact_service=RuneArtifactService(rune.artifacts),
+        session_service=NexusSessionService(runtime.sessions),
+        artifact_service=NexusArtifactService(runtime.artifacts),
     )
 """
 
@@ -29,8 +34,8 @@ import time
 import uuid
 from typing import Any, Optional
 
-from ..core.models import Checkpoint, MemoryEntry
-from ..core.providers import SessionProvider, MemoryProvider, ArtifactProvider
+from ..core.models import Checkpoint
+from ..core.providers import SessionProvider, ArtifactProvider
 
 # ADK imports are optional — only needed when actually using this adapter
 try:
@@ -56,11 +61,11 @@ from .registry import AdapterRegistry
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class RuneSessionService(BaseSessionService):
+class NexusSessionService(BaseSessionService):
     """
     Adapter: ADK BaseSessionService → SessionProvider.
 
-    Converts ADK Session/Event objects ↔ Rune Checkpoints,
+    Converts ADK Session/Event objects ↔ Nexus Checkpoints,
     then delegates all persistence to the provider.
     """
 
@@ -190,68 +195,16 @@ class RuneSessionService(BaseSessionService):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Memory Adapter
+# Memory Adapter — DELETED in Phase D 续 #2
 # ═══════════════════════════════════════════════════════════════════════
-
-
-class RuneMemoryService(BaseMemoryService):
-    """
-    Adapter: ADK BaseMemoryService → MemoryProvider.
-    """
-
-    def __init__(self, memory_provider: MemoryProvider):
-        self._provider = memory_provider
-
-    async def add_session_to_memory(self, session: Any) -> None:
-        if _ADK_AVAILABLE and hasattr(session, 'events'):
-            agent_id = f"{session.app_name}:{session.user_id}"
-            for event in (session.events or []):
-                text = self._event_to_text(event)
-                if text:
-                    await self._provider.add(text, agent_id=agent_id, user_id=session.user_id)
-        elif isinstance(session, dict):
-            agent_id = f"{session.get('app_name', '')}:{session.get('user_id', '')}"
-            user_id = session.get("user_id", "")
-            for event in session.get("events", []):
-                if isinstance(event, dict):
-                    text = event.get("text", str(event))
-                else:
-                    text = self._event_to_text(event)
-                if text:
-                    await self._provider.add(text, agent_id=agent_id, user_id=user_id)
-
-    async def search_memory(self, *, app_name: str, user_id: str, query: str) -> Any:
-        agent_id = f"{app_name}:{user_id}"
-        results = await self._provider.search(query, agent_id=agent_id, user_id=user_id)
-        if _ADK_AVAILABLE:
-            from google.adk.memory import SearchMemoryResponse, MemoryResult
-            return SearchMemoryResponse(
-                memories=[MemoryResult(content=r.content, score=r.score) for r in results],
-            )
-        return results
-
-    @staticmethod
-    def _event_to_text(event: Any) -> str:
-        # Try content.parts first (standard ADK events with LLM responses)
-        if hasattr(event, 'content') and event.content:
-            parts = []
-            if hasattr(event.content, 'parts'):
-                for part in event.content.parts:
-                    if hasattr(part, 'text') and part.text:
-                        parts.append(part.text)
-            if parts:
-                return " ".join(parts)
-
-        # Fall back to state_delta values (events with tool results / state updates)
-        if hasattr(event, 'actions') and event.actions:
-            delta = getattr(event.actions, 'state_delta', None)
-            if delta:
-                texts = [str(v) for k, v in delta.items()
-                         if isinstance(v, str) and len(v) > 10]
-                if texts:
-                    return " | ".join(texts)
-
-        return ""
+#
+# ``NexusMemoryService`` (the ADK BaseMemoryService bridge) was
+# removed when MemoryProvider was deleted. Memory storage now
+# lives in the typed Phase J namespace stores (``FactsStore`` /
+# ``EpisodesStore`` / ``SkillsStore`` / ``PersonaStore`` /
+# ``KnowledgeStore``). If ADK BaseMemoryService parity is needed
+# again, it should be a thin wrapper over those typed stores —
+# not a re-introduction of the old MemoryProvider abstraction.
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -259,7 +212,7 @@ class RuneMemoryService(BaseMemoryService):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class RuneArtifactService(BaseArtifactService):
+class NexusArtifactService(BaseArtifactService):
     """
     Adapter: ADK BaseArtifactService → ArtifactProvider.
     """
@@ -318,4 +271,4 @@ class RuneArtifactService(BaseArtifactService):
 
 
 # Register
-AdapterRegistry.register("adk", RuneSessionService)
+AdapterRegistry.register("adk", NexusSessionService)

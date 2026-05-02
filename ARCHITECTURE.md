@@ -34,7 +34,7 @@ explained in terms of what it adds to the layer below.
                  ▼                             ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  SDK (nexus_core)                          — Python              │
-│    Rune builder: testnet() / mainnet() / local() → RuneProvider     │
+│    Entry points: testnet() / mainnet() / local() → AgentRuntime     │
 │    Storage backends: ChainBackend / LocalBackend / MockBackend       │
 │    Memory primitives: EventLog / CuratedMemory / EventLogCompactor   │
 │    Contract primitives: ContractEngine / DriftScore                  │
@@ -55,7 +55,7 @@ Imports flow strictly downward. Verified:
 - **SDK** imports from neither Nexus nor Server. (`grep "from nexus\|from nexus_server" packages/sdk/` returns nothing.)
 - **Nexus** imports from SDK only. (`from nexus_core import ...`.)
 - **Server** imports from Nexus + (rarely) SDK directly for utilities like
-  `bucket_for_agent`, `distill`, `RuneChainClient`.
+  `bucket_for_agent`, `distill`, `BSCClient`.
 - **Desktop** talks to Server over HTTP only.
 
 This invariant is the single most important property of the architecture.
@@ -73,9 +73,9 @@ parsing, LLM provider abstraction, tool function-calling.
 
 **Doesn't know about**: agents, users, HTTP, JWT, multi-tenancy, twins.
 
-**Public entry point**: `Rune.testnet(...)` / `Rune.mainnet(...)` /
-`Rune.local(...)` returns a `RuneProvider` with `.sessions / .tasks /
-.memory / .impressions` namespaces.
+**Public entry point**: `nexus_core.testnet(...)` / `nexus_core.mainnet(...)` /
+`nexus_core.local(...)` returns an `AgentRuntime` with `.sessions / .tasks /
+.memory / .artifacts / .impressions` namespaces.
 
 **Why it exists separately from Nexus**: someone could build an entirely
 different agent framework on top of these primitives. The SDK is the
@@ -178,7 +178,7 @@ For the full byte-level trace see [`docs/concepts/data-flow.md`](docs/concepts/d
 | Per-user contracts + drift state | `~/.nexus_server/twins/{user_id}/contracts/...` | Twin |
 | Chain mode: durable event mirror | Greenfield bucket `nexus-agent-{token_id}` | ChainBackend (SDK) |
 | Chain mode: state-root hashes | BSC `AgentStateExtension` per token | ChainBackend (SDK) |
-| Identity registration | BSC ERC-8004 IdentityRegistry | SDK (`RuneChainClient.register_agent`) |
+| Identity registration | BSC ERC-8004 IdentityRegistry | SDK (`BSCClient.register_agent`) |
 | Server-side audit mirror | `nexus_server.db.sync_events` | Server (transitional) |
 | Pre-S4 anchor history | `nexus_server.db.sync_anchors` | Server (legacy, read-only) |
 | Twin chain activity log | `nexus_server.db.twin_chain_events` | Server (Bug 3 visibility) |

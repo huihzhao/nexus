@@ -77,12 +77,12 @@ TwinManager._create_twin(user_id):
   │       greenfield_bucket="nexus-agent-866",
   │       cached_agent_id=866,         ← Bug 2 fix: skip re-register
   │       …chain_kwargs)
-  │     └── In SDK: Rune.testnet(private_key=..., greenfield_bucket=...)
+  │     └── In SDK: nexus_core.testnet(private_key=..., greenfield_bucket=...)
   │           ├── ChainBackend.__init__:
   │           │     ├── GreenfieldClient(bucket_name="nexus-agent-866", ...)
   │           │     ├── BSCClient(rpc_url, private_key, ...)
   │           │     └── WAL replay (resume any incomplete writes from prior boot)
-  │           └── return RuneProvider(backend=ChainBackend)
+  │           └── return AgentRuntime(backend=ChainBackend)
   │
   ├── twin._save_identity_cache(866, wallet) ← Bug 2: pre-seed
   ├── twin._initialize():
@@ -209,6 +209,18 @@ ChatViewModel.SendMessageAsync (continuation):
 That's it. No local persistence. If the user reloads the desktop, history
 re-fetches from `GET /api/v1/agent/messages` (Round 2-A).
 
+When the user opens the **Brain panel** (Phase D 续 / #159), the
+desktop fans out two parallel reads:
+
+- `GET /api/v1/agent/chain_status` — per-namespace 3-state status
+  (`local` / `mirrored` / `anchored`) plus a chain-health card
+  (WAL queue, daemon alive, Greenfield + BSC readiness).
+- `GET /api/v1/agent/learning_summary?window=7d` — 7-day timeline
+  + data-flow stage snapshot + just-learned feed.
+
+Both endpoints are pure projections over the typed namespace stores +
+EventLog window — no LLM calls, no chain traffic.
+
 ## What happens in parallel (the background fan-out)
 
 After Stage 3 returns the reply, three things continue:
@@ -266,4 +278,7 @@ every few seconds) will pick up the resulting events as they land.
 | Step 3 (memory projection) | `packages/nexus/nexus/evolution/projection.py`, `packages/sdk/nexus_core/memory/curated.py` |
 | Step 5 (post-check) | `packages/sdk/nexus_core/contracts/engine.py` |
 | Step 9 (evolution) | `packages/nexus/nexus/evolution/engine.py` |
+| Brain panel chain status | `packages/server/nexus_server/agent_state.py:chain_status` |
+| Brain panel learning summary | `packages/server/nexus_server/agent_state.py:learning_summary` |
+| VersionedStore chain_status helper | `packages/sdk/nexus_core/memory/versioned.py:VersionedStore.chain_status` |
 | Bug 3 chain log capture | `packages/server/nexus_server/twin_manager.py:_ChainActivityLogHandler` |

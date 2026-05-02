@@ -207,70 +207,80 @@ class TestBug_ParallelContextRetrieval:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Bug: Persona version tracking — _evolution_history.append() ran
-# BEFORE _save_persona(), so version was always stale
+# Phase D: PersonaEvolver — typed PersonaStore is the only source.
+#
+# The Phase D refactor deleted the legacy ``persona.json`` artifact
+# round-trip (``_save_persona`` / ``_current_persona`` cache /
+# ``_dirty`` merge logic / ``apply_rollback``). Reads + writes go
+# through the typed ``PersonaStore``; rollback is a pointer flip.
+# These tests pin the new contract.
 # ══════════════════════════════════════════════════════════════════════
 
-class TestBug_PersonaVersionTracking:
-    """_evolution_history.append() was called before _save_persona(),
-    so the version number recorded was always the previous version."""
+class TestPhaseD_PersonaTypedSource:
+    """PersonaEvolver no longer carries a legacy artifact path."""
 
-    def test_history_append_after_save(self):
-        """Verify the code appends to history AFTER saving."""
-        import inspect
+    def test_no_legacy_save_method(self):
+        """``_save_persona`` is gone — typed-store ``propose_version``
+        is the only durable write path."""
         from nexus.evolution.persona_evolver import PersonaEvolver
-        source = inspect.getsource(PersonaEvolver.evolve)
+        assert not hasattr(PersonaEvolver, "_save_persona")
 
-        # _save_persona should appear before _evolution_history.append
-        save_pos = source.find("_save_persona")
-        append_pos = source.find("_evolution_history.append")
-        assert save_pos > 0
-        assert append_pos > 0
-        assert save_pos < append_pos, \
-            "_save_persona must be called before _evolution_history.append"
-
-    def test_version_comes_from_save(self):
-        """Verify _save_persona sets self._version from artifact store."""
-        import inspect
+    def test_no_apply_rollback(self):
+        """Phase D removed apply_rollback. Typed-store rollback is
+        the rollback — chat-time projections re-read on next call."""
         from nexus.evolution.persona_evolver import PersonaEvolver
-        source = inspect.getsource(PersonaEvolver._save_persona)
-        assert "self._version = await self.rune.artifacts.save" in source
+        assert not hasattr(PersonaEvolver, "apply_rollback")
+
+    def test_persona_store_autocreated(self, rune_provider):
+        """A PersonaEvolver constructed without a persona_store
+        synthesises a scratch one — typed store is always the
+        single source of truth."""
+        from nexus.evolution.persona_evolver import PersonaEvolver
+        evolver = PersonaEvolver(rune_provider, "agent-1", AsyncMock())
+        assert evolver.persona_store is not None
 
     @pytest.mark.asyncio
-    async def test_persona_dirty_flag_set_on_evolve(self, rune_provider):
-        """After evolving, the dirty flag should be True."""
+    async def test_evolve_writes_typed_store(self, rune_provider, tmp_path):
+        """A successful evolve() advances the typed store version."""
         from nexus.evolution.persona_evolver import PersonaEvolver
+        from nexus_core.memory import PersonaStore
 
         async def fake_llm(prompt):
             return json.dumps({
-                "evolved_persona": "A" * 100,  # >50 chars
+                "evolved_persona": "B" * 100,
                 "changes_summary": "test change",
                 "confidence": 0.9,
                 "version_notes": "v1",
             })
 
-        evolver = PersonaEvolver(rune_provider, "agent-1", fake_llm)
-        evolver._current_persona = "original persona text here"
+        store = PersonaStore(base_dir=tmp_path)
+        evolver = PersonaEvolver(
+            rune_provider, "agent-1", fake_llm, persona_store=store,
+        )
+        await evolver.load_persona("default persona text here")
+        assert store.current_version() is None
 
         result = await evolver.evolve(
-            memories_sample=["memory1", "memory2"],
-            skills_summary={"total_skills": 1},
+            memories_sample=["m1", "m2"], skills_summary={"total_skills": 1},
         )
-
         assert "error" not in result
-        assert evolver._dirty is True
+        assert store.current_version() == "v0001"
+        assert (store.current().persona_text or "").startswith("B" * 50)
 
     @pytest.mark.asyncio
-    async def test_dirty_flag_skips_load(self, rune_provider):
-        """When dirty=True, load_persona should skip and keep local version."""
+    async def test_load_reads_typed_store(self, rune_provider, tmp_path):
+        """load_persona reflects the typed store's current version."""
         from nexus.evolution.persona_evolver import PersonaEvolver
+        from nexus_core.memory import PersonaStore, PersonaVersion
 
-        evolver = PersonaEvolver(rune_provider, "agent-1", AsyncMock())
-        evolver._current_persona = "locally evolved persona"
-        evolver._dirty = True
+        store = PersonaStore(base_dir=tmp_path)
+        store.propose_version(PersonaVersion(persona_text="from-store"))
 
-        result = await evolver.load_persona("default persona")
-        assert result == "locally evolved persona"  # not overwritten
+        evolver = PersonaEvolver(
+            rune_provider, "agent-1", AsyncMock(), persona_store=store,
+        )
+        result = await evolver.load_persona("ignored default")
+        assert result == "from-store"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -346,62 +356,103 @@ class TestBug_KnowledgeCompilerLocking:
 # local articles when background load happened after local compilation
 # ══════════════════════════════════════════════════════════════════════
 
-class TestBug_KnowledgeCompilerDirtyMerge:
-    """When _dirty=True, load_articles should merge remote+local
-    instead of blindly overwriting local state."""
+class TestPhaseD_KnowledgeTypedSource:
+    """Phase D: KnowledgeCompiler reads + writes through the typed
+    KnowledgeStore. The legacy ``knowledge_articles.json`` artifact
+    + dirty-merge logic are gone; ``load_articles`` is now a pure
+    projection rebuild from the typed store."""
 
-    def test_dirty_flag_triggers_merge(self):
-        """Verify the implementation checks _dirty flag during load."""
+    def test_no_apply_rollback(self):
+        from nexus.evolution.knowledge_compiler import KnowledgeCompiler
+        assert not hasattr(KnowledgeCompiler, "apply_rollback")
+
+    def test_no_mirror_to_typed_store(self):
+        """Mirror is gone — typed store IS the source."""
+        from nexus.evolution.knowledge_compiler import KnowledgeCompiler
+        assert not hasattr(KnowledgeCompiler, "_mirror_to_typed_store")
+
+    def test_load_uses_typed_store(self):
+        """load_articles reads from knowledge_store, not artifacts."""
         import inspect
         from nexus.evolution.knowledge_compiler import KnowledgeCompiler
         source = inspect.getsource(KnowledgeCompiler.load_articles)
-        assert "self._dirty" in source
-        assert "merged" in source or "merge" in source.lower()
+        assert "knowledge_store.all" in source
+        assert "rune.artifacts.load" not in source
+
+    def test_knowledge_store_autocreated(self, rune_provider):
+        from nexus.evolution.knowledge_compiler import KnowledgeCompiler
+        compiler = KnowledgeCompiler(rune_provider, "agent-1", AsyncMock())
+        assert compiler.knowledge_store is not None
 
     @pytest.mark.asyncio
-    async def test_local_articles_survive_load(self, rune_provider):
-        """Local articles should not be lost when loading from remote."""
+    async def test_load_returns_typed_store_contents(self, rune_provider, tmp_path):
+        """``load_articles`` is now a pure projection rebuild from the
+        typed store. Articles in the typed store appear in the
+        returned dict; nothing else does."""
         from nexus.evolution.knowledge_compiler import KnowledgeCompiler
+        from nexus_core.memory import KnowledgeStore, KnowledgeArticle
+
+        store = KnowledgeStore(base_dir=tmp_path)
+        store.upsert(KnowledgeArticle(
+            title="from_chain",
+            content="this came from the typed store",
+        ))
+        store.commit()
 
         compiler = KnowledgeCompiler(
-            rune_provider, "agent-1", AsyncMock(),
+            rune_provider, "agent-1", AsyncMock(), knowledge_store=store,
         )
-        # Simulate local compilation
-        compiler._articles = {"local_topic": {"content": "local article"}}
-        compiler._dirty = True
-
-        # Load (which may get empty/different remote data)
         articles = await compiler.load_articles()
-
-        # Local article should still be present
-        assert "local_topic" in articles
+        assert "from_chain" in articles
+        assert articles["from_chain"]["content"].startswith("this came")
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Bug: SkillEvolver dirty merge — same pattern as KnowledgeCompiler
+# Phase D: SkillEvolver — typed SkillsStore is the source of truth.
+# Legacy ``skills_registry.json`` artifact + dirty-merge logic gone.
 # ══════════════════════════════════════════════════════════════════════
 
-class TestBug_SkillEvolverDirtyMerge:
-    """When _dirty=True, load_skills should merge remote+local."""
+class TestPhaseD_SkillEvolverTypedSource:
 
-    def test_dirty_flag_triggers_merge(self):
+    def test_no_apply_rollback(self):
+        from nexus.evolution.skill_evolver import SkillEvolver
+        assert not hasattr(SkillEvolver, "apply_rollback")
+
+    def test_no_mirror_to_typed_store(self):
+        from nexus.evolution.skill_evolver import SkillEvolver
+        assert not hasattr(SkillEvolver, "_mirror_to_typed_store")
+
+    def test_load_uses_typed_store(self):
         import inspect
         from nexus.evolution.skill_evolver import SkillEvolver
         source = inspect.getsource(SkillEvolver._load_skills_unlocked)
-        assert "self._dirty" in source
+        assert "skills_store.all" in source
+        assert "rune.artifacts.load" not in source
+
+    def test_skills_store_autocreated(self, rune_provider):
+        from nexus.evolution.skill_evolver import SkillEvolver
+        evolver = SkillEvolver(rune_provider, "agent-1", AsyncMock())
+        assert evolver.skills_store is not None
 
     @pytest.mark.asyncio
-    async def test_local_skills_survive_load(self, rune_provider):
+    async def test_load_returns_typed_store_contents(self, rune_provider, tmp_path):
         from nexus.evolution.skill_evolver import SkillEvolver
+        from nexus_core.memory import SkillsStore, LearnedSkill
 
-        evolver = SkillEvolver(rune_provider, "agent-1", AsyncMock())
-        evolver._skills_cache = {
-            "local_skill": {"name": "local_skill", "best_strategy": "test"},
-        }
-        evolver._dirty = True
+        store = SkillsStore(base_dir=tmp_path)
+        store.upsert(LearnedSkill(
+            skill_name="from_chain",
+            description="seeded skill",
+            strategy="do the thing",
+        ))
+        store.commit()
 
+        evolver = SkillEvolver(
+            rune_provider, "agent-1", AsyncMock(), skills_store=store,
+        )
         skills = await evolver.load_skills()
-        assert "local_skill" in skills
+        assert "from_chain" in skills
+        assert skills["from_chain"]["best_strategy"] == "do the thing"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -454,61 +505,12 @@ class TestBug_EngineInitParallel:
         # Second call should be a no-op
         await engine.initialize()
         assert engine._initialized is True
+# Phase D 续 #2: MemoryProvider-specific test classes deleted
+# (recall LLM threshold, preload, access count, consolidation safety,
+# flush dirty tracking). The typed Phase J namespace stores have their
+# own test suite in nexus_core/tests/test_memory_namespaces.py and the
+# new MemoryEvolver flow uses facts_store directly.
 
-
-# ══════════════════════════════════════════════════════════════════════
-# Bug: recall_relevant Layer 2 LLM call triggered too eagerly,
-# causing 2-3s latency that exceeded get_context_for_query timeout
-# ══════════════════════════════════════════════════════════════════════
-
-class TestBug_RecallRelevantLLMThreshold:
-    """recall_relevant() made an LLM API call (Layer 2 selection) whenever
-    len(compacts) > top_k. With Gemini at 2-3s per call, this exceeded
-    the 2s wait_for timeout in get_context_for_query. Threshold raised
-    to top_k * 3 so the LLM call only triggers for large memory sets."""
-
-    def test_threshold_uses_multiplier(self):
-        """Verify the threshold is top_k * 3, not just top_k."""
-        import inspect
-        from nexus.evolution.memory_evolver import MemoryEvolver
-        source = inspect.getsource(MemoryEvolver.recall_relevant)
-        # Should contain the multiplied threshold check
-        assert "top_k * 3" in source
-
-    def test_small_result_set_skips_llm(self):
-        """When compacts <= top_k * 3, should NOT invoke LLM selection."""
-        import inspect
-        from nexus.evolution.memory_evolver import MemoryEvolver
-        source = inspect.getsource(MemoryEvolver.recall_relevant)
-        # The early-return path fetches by IDs directly without LLM
-        # Pattern: if len(compacts) <= top_k * 3: ... get_by_ids ...
-        assert "get_by_ids" in source
-        # The condition should come BEFORE the LLM prompt construction
-        threshold_pos = source.find("top_k * 3")
-        prompt_pos = source.find("MEMORY_SELECT_PROMPT")
-        assert threshold_pos > 0
-        assert prompt_pos > 0
-        assert threshold_pos < prompt_pos, \
-            "Threshold check must come before LLM prompt to enable short-circuit"
-
-    @pytest.mark.asyncio
-    async def test_recall_no_llm_for_moderate_memories(self, rune_provider):
-        """With <= top_k*3 memories, recall_relevant should not call llm_fn."""
-        from nexus.evolution.memory_evolver import MemoryEvolver
-
-        llm_fn = AsyncMock(return_value="[]")
-        evolver = MemoryEvolver(rune_provider, "agent-1", llm_fn)
-
-        # Add a few memories (well under top_k * 3 = 15)
-        for i in range(5):
-            await rune_provider.memory.add(
-                f"Memory fact #{i}", agent_id="agent-1",
-                metadata={"category": "fact", "importance": 3},
-            )
-
-        results = await evolver.recall_relevant("test query", top_k=5)
-        # LLM should NOT have been called (short-circuit path)
-        llm_fn.assert_not_called()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -608,70 +610,12 @@ class TestBug_SkillDetectionEmptyResponse:
             [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello!"}],
         )
         assert result == []
-        # Should NOT have raised any exception
+# Phase D 续 #2: MemoryProvider-specific test classes deleted
+# (recall LLM threshold, preload, access count, consolidation safety,
+# flush dirty tracking). The typed Phase J namespace stores have their
+# own test suite in nexus_core/tests/test_memory_namespaces.py and the
+# new MemoryEvolver flow uses facts_store directly.
 
-
-# ══════════════════════════════════════════════════════════════════════
-# Bug: Memory not available on first chat() — cold start lazy-load
-# exceeded 3s context timeout
-# ══════════════════════════════════════════════════════════════════════
-
-class TestBug_MemoryPreloadOnInit:
-    """On cold start, memories were only loaded lazily during
-    get_context_for_query() which has a 3s timeout. Greenfield reads
-    take 3-10s, so memories were always empty on the first turn.
-    Now evolution.initialize() preloads memories."""
-
-    def test_initialize_preloads_memory(self):
-        """initialize() should call _preload_memories."""
-        import inspect
-        from nexus.evolution.engine import EvolutionEngine
-        source = inspect.getsource(EvolutionEngine.initialize)
-        assert "_preload_memories" in source
-
-    def test_preload_calls_ensure_loaded(self):
-        """_preload_memories should trigger _ensure_loaded on the provider."""
-        import inspect
-        from nexus.evolution.engine import EvolutionEngine
-        source = inspect.getsource(EvolutionEngine._preload_memories)
-        assert "_ensure_loaded" in source
-        # Must use self.agent_id (no underscore), not self._agent_id
-        assert "self.agent_id" in source
-
-    @pytest.mark.asyncio
-    async def test_memories_available_after_init(self, rune_provider):
-        """After initialize(), memories should be in the in-memory cache."""
-        from nexus.evolution.engine import EvolutionEngine
-
-        # Add some memories first
-        await rune_provider.memory.add(
-            "User likes spicy food", agent_id="agent-1",
-            metadata={"category": "preference", "importance": 5},
-        )
-
-        # Create a fresh engine (simulates cold start)
-        engine = EvolutionEngine(
-            rune_provider, "agent-1",
-            llm_fn=AsyncMock(return_value="[]"),
-        )
-
-        # Before init: clear loaded cache to simulate cold start
-        rune_provider.memory._loaded_agents.clear()
-
-        await engine.initialize()
-
-        # Memory should now be preloaded — search should find it instantly
-        results = await rune_provider.memory.search("spicy", agent_id="agent-1")
-        assert len(results) >= 1
-        assert "spicy" in results[0].content
-
-    def test_init_timeout_is_generous(self):
-        """twin._initialize should give evolution.initialize at least 10s."""
-        import inspect
-        from nexus.twin import DigitalTwin
-        source = inspect.getsource(DigitalTwin._initialize)
-        # Should have a timeout >= 10s for evolution.initialize
-        assert "timeout=10.0" in source
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -686,13 +630,13 @@ class TestBug_CrossLanguageMemoryFallback:
     and said 'I don't know your preferences'. Now falls back to recency."""
 
     def test_recall_relevant_has_fallback(self):
-        """recall_relevant should have a fallback when compacts is empty."""
+        """recall_relevant should have a fallback when compacts is empty.
+        Phase D 续: fallback path uses ``facts_store.all()``."""
         import inspect
         from nexus.evolution.memory_evolver import MemoryEvolver
         source = inspect.getsource(MemoryEvolver.recall_relevant)
-        # Should check `if not compacts:` and have a fallback path
         assert "if not compacts:" in source
-        assert "list_all" in source
+        assert "facts_store.all()" in source
 
     def test_fallback_sorts_by_recency(self):
         """Fallback should sort memories by created_at (newest first)."""
@@ -703,51 +647,50 @@ class TestBug_CrossLanguageMemoryFallback:
         assert "reverse=True" in source
 
     @pytest.mark.asyncio
-    async def test_fallback_returns_recent_memories(self, rune_provider):
-        """When TF-IDF returns empty, recall should still return memories."""
+    async def test_fallback_returns_recent_memories(self, rune_provider, tmp_path):
+        """When TF-IDF returns empty, recall should still return facts."""
         from nexus.evolution.memory_evolver import MemoryEvolver
+        from nexus_core.memory import Fact, FactsStore
 
-        # Add English memories
-        await rune_provider.memory.add(
-            "User likes spicy food", agent_id="agent-1",
-            metadata={"category": "preference", "importance": 5},
-        )
-        await rune_provider.memory.add(
-            "User prefers dark mode", agent_id="agent-1",
-            metadata={"category": "preference", "importance": 3},
-        )
+        facts_store = FactsStore(base_dir=tmp_path)
+        facts_store.upsert(Fact(content="User likes spicy food",
+                                category="preference", importance=5))
+        facts_store.upsert(Fact(content="User prefers dark mode",
+                                category="preference", importance=3))
 
         evolver = MemoryEvolver(
             rune_provider, "agent-1",
             llm_fn=AsyncMock(return_value="[]"),
+            facts_store=facts_store,
         )
 
-        # Query in Chinese — TF-IDF will likely return no matches with English content
-        # But the fallback should still return memories
+        # Chinese query against English content — TF-style search returns
+        # nothing, but fallback path should still return facts.
         results = await evolver.recall_relevant("你知道我喜欢什么吗", top_k=5)
-        assert len(results) > 0, "Fallback should return memories even with cross-language mismatch"
+        assert len(results) > 0, "Fallback should return facts even with cross-language mismatch"
 
     @pytest.mark.asyncio
-    async def test_fallback_respects_top_k(self, rune_provider):
+    async def test_fallback_respects_top_k(self, rune_provider, tmp_path):
         """Fallback should respect the top_k limit."""
         from nexus.evolution.memory_evolver import MemoryEvolver
+        from nexus_core.memory import Fact, FactsStore
 
-        # Add many memories
+        facts_store = FactsStore(base_dir=tmp_path)
         for i in range(10):
-            await rune_provider.memory.add(
-                f"Memory number {i}", agent_id="agent-1",
-                metadata={"category": "fact", "importance": 3},
-            )
+            facts_store.upsert(Fact(
+                content=f"Fact number {i}",
+                category="fact",
+                importance=3,
+            ))
 
         evolver = MemoryEvolver(
             rune_provider, "agent-1",
             llm_fn=AsyncMock(return_value="[]"),
+            facts_store=facts_store,
         )
 
-        # Use a very unusual query that won't match any tokens
         results = await evolver.recall_relevant("zzzzzzzzz", top_k=3)
-        # Should return at most 3 results (may return fewer or 0 if TF-IDF still finds something)
-        assert len(results) <= 10  # At minimum shouldn't return more than total
+        assert len(results) <= 10
 
     def test_fallback_returns_score_zero(self):
         """Fallback memories should have score 0.0 (not TF-IDF ranked)."""
@@ -974,23 +917,29 @@ class TestFeature_MemoryCapacityManagement:
         assert MemoryEvolver.CONSOLIDATION_TRIGGER_RATIO == 0.9
 
     @pytest.mark.asyncio
-    async def test_check_and_consolidate_below_threshold(self):
+    async def test_check_and_consolidate_below_threshold(self, tmp_path):
         """Should not consolidate when below trigger threshold."""
         from nexus.evolution.memory_evolver import MemoryEvolver
+        from nexus_core.memory import Fact, FactsStore
         rune = nexus_core.builder().mock_backend().build()
-        evolver = MemoryEvolver(rune, "agent-1", llm_fn=AsyncMock(), max_memories=100)
+        facts_store = FactsStore(base_dir=tmp_path)
+        evolver = MemoryEvolver(
+            rune, "agent-1", llm_fn=AsyncMock(),
+            max_memories=100, facts_store=facts_store,
+        )
 
-        # Add a few memories (well below 90% of 100)
+        # Add a few facts (well below 90% of 100)
         for i in range(5):
-            await rune.memory.add(f"memory {i}", "agent-1")
+            facts_store.upsert(Fact(content=f"memory {i}"))
 
         freed = await evolver._check_and_consolidate()
         assert freed == 0
 
     @pytest.mark.asyncio
-    async def test_check_and_consolidate_above_threshold(self):
+    async def test_check_and_consolidate_above_threshold(self, tmp_path):
         """Should consolidate when above trigger threshold."""
         from nexus.evolution.memory_evolver import MemoryEvolver
+        from nexus_core.memory import Fact, FactsStore
 
         async def mock_llm(prompt):
             return json.dumps([
@@ -999,49 +948,60 @@ class TestFeature_MemoryCapacityManagement:
             ])
 
         rune = nexus_core.builder().mock_backend().build()
-        evolver = MemoryEvolver(rune, "agent-1", llm_fn=mock_llm, max_memories=10)
+        facts_store = FactsStore(base_dir=tmp_path)
+        evolver = MemoryEvolver(
+            rune, "agent-1", llm_fn=mock_llm,
+            max_memories=10, facts_store=facts_store,
+        )
 
-        # Add 10 memories (100% of 10 capacity, above 90% trigger)
         for i in range(10):
-            await rune.memory.add(f"memory about topic {i}", "agent-1")
+            facts_store.upsert(Fact(content=f"memory about topic {i}"))
 
-        count_before = await rune.memory.count("agent-1")
+        count_before = facts_store.count()
         assert count_before == 10
 
         freed = await evolver._check_and_consolidate()
-        assert freed > 0  # Should have freed some slots
+        assert freed > 0
 
-        count_after = await rune.memory.count("agent-1")
+        count_after = facts_store.count()
         assert count_after < count_before
 
     @pytest.mark.asyncio
-    async def test_consolidation_preserves_high_value(self):
-        """Consolidation should target least-accessed memories."""
+    async def test_consolidation_preserves_high_value(self, tmp_path):
+        """Consolidation should target least-accessed facts."""
         from nexus.evolution.memory_evolver import MemoryEvolver
+        from nexus_core.memory import Fact, FactsStore
 
         async def mock_llm(prompt):
             return json.dumps([
-                {"content": "Merged summary", "category": "consolidated", "importance": 3},
+                {"content": "Merged summary", "category": "fact", "importance": 3},
             ])
 
         rune = nexus_core.builder().mock_backend().build()
-        evolver = MemoryEvolver(rune, "agent-1", llm_fn=mock_llm, max_memories=10)
+        facts_store = FactsStore(base_dir=tmp_path)
+        evolver = MemoryEvolver(
+            rune, "agent-1", llm_fn=mock_llm,
+            max_memories=10, facts_store=facts_store,
+        )
 
-        # Add memories, then search some to boost their access_count
+        keys = []
         for i in range(10):
-            await rune.memory.add(f"memory {i} about python coding", "agent-1")
+            f = Fact(content=f"memory {i} about python coding")
+            facts_store.upsert(f)
+            keys.append(f.key)
 
-        # Search to boost access on some memories
-        await rune.memory.search("python coding", "agent-1", top_k=3)
+        # Touch some keys to bump access_count.
+        facts_store.touch_many(keys[:3])
 
-        # Consolidation should target the ones with lowest access_count
-        candidates = await rune.memory.get_least_accessed("agent-1", limit=5)
-        assert all(c.access_count <= 1 for c in candidates[:3])
+        candidates = facts_store.get_least_accessed(limit=5)
+        # The 7 untouched facts should have access_count=0.
+        assert all(c.access_count == 0 for c in candidates[:5])
 
     @pytest.mark.asyncio
-    async def test_force_consolidate(self):
+    async def test_force_consolidate(self, tmp_path):
         """force_consolidate() should work regardless of capacity."""
         from nexus.evolution.memory_evolver import MemoryEvolver
+        from nexus_core.memory import Fact, FactsStore
 
         async def mock_llm(prompt):
             return json.dumps([
@@ -1049,51 +1009,63 @@ class TestFeature_MemoryCapacityManagement:
             ])
 
         rune = nexus_core.builder().mock_backend().build()
-        evolver = MemoryEvolver(rune, "agent-1", llm_fn=mock_llm, max_memories=1000)
+        facts_store = FactsStore(base_dir=tmp_path)
+        evolver = MemoryEvolver(
+            rune, "agent-1", llm_fn=mock_llm,
+            max_memories=1000, facts_store=facts_store,
+        )
 
-        # Add a few memories (well below capacity)
         for i in range(5):
-            await rune.memory.add(f"memory {i}", "agent-1")
+            facts_store.upsert(Fact(content=f"memory {i}"))
 
         freed = await evolver.force_consolidate(batch_size=5)
-        assert freed > 0  # Should consolidate despite being below threshold
+        assert freed > 0
 
     @pytest.mark.asyncio
-    async def test_consolidation_llm_failure_preserves_memories(self):
-        """When LLM fails during consolidation, should preserve all memories (no blind eviction)."""
+    async def test_consolidation_llm_failure_preserves_memories(self, tmp_path):
+        """When LLM fails during consolidation, preserve all facts (no blind eviction)."""
         from nexus.evolution.memory_evolver import MemoryEvolver
+        from nexus_core.memory import Fact, FactsStore
 
         async def failing_llm(prompt):
             raise RuntimeError("LLM unavailable")
 
         rune = nexus_core.builder().mock_backend().build()
-        evolver = MemoryEvolver(rune, "agent-1", llm_fn=failing_llm, max_memories=10)
+        facts_store = FactsStore(base_dir=tmp_path)
+        evolver = MemoryEvolver(
+            rune, "agent-1", llm_fn=failing_llm,
+            max_memories=10, facts_store=facts_store,
+        )
 
         for i in range(10):
-            await rune.memory.add(f"memory {i}", "agent-1")
+            facts_store.upsert(Fact(content=f"memory {i}"))
 
-        count_before = await rune.memory.count("agent-1")
+        count_before = facts_store.count()
         freed = await evolver._check_and_consolidate()
-        count_after = await rune.memory.count("agent-1")
+        count_after = facts_store.count()
 
-        # Safe fallback: preserve all memories rather than blind eviction
         assert freed == 0
         assert count_after == count_before
 
     @pytest.mark.asyncio
-    async def test_stats_include_capacity(self):
+    async def test_stats_include_capacity(self, tmp_path):
         """get_stats() should include capacity information."""
         from nexus.evolution.memory_evolver import MemoryEvolver
+        from nexus_core.memory import Fact, FactsStore
         rune = nexus_core.builder().mock_backend().build()
-        evolver = MemoryEvolver(rune, "agent-1", llm_fn=AsyncMock(), max_memories=200)
+        facts_store = FactsStore(base_dir=tmp_path)
+        evolver = MemoryEvolver(
+            rune, "agent-1", llm_fn=AsyncMock(),
+            max_memories=200, facts_store=facts_store,
+        )
 
         for i in range(5):
-            await rune.memory.add(f"memory {i}", "agent-1")
+            facts_store.upsert(Fact(content=f"memory {i}"))
 
         stats = await evolver.get_stats()
         assert stats["total_memories"] == 5
         assert stats["max_memories"] == 200
-        assert stats["capacity_pct"] == 2.5  # 5/200 * 100
+        assert stats["capacity_pct"] == 2.5
         assert "consolidation_rounds" in stats
 
 
@@ -1101,30 +1073,28 @@ class TestFeature_MemoryCapacityManagement:
 # Feature: SkillEvolver stores skills under "skills" key (new format)
 # ══════════════════════════════════════════════════════════════════════
 
-class TestFeature_SkillStorageFormat:
-    """Skills should be saved under a 'skills' key to separate from metadata."""
+class TestPhaseD_SkillStorageFormat:
+    """Phase D: SkillEvolver routes through the typed SkillsStore.
+    The legacy ``skills_registry.json`` artifact + its ``{"skills":
+    {…}}`` envelope are gone — typed store schema owns the layout
+    instead."""
 
-    def test_save_wraps_in_skills_key(self):
-        """_save_skills_unlocked should wrap skills under 'skills' key."""
+    def test_save_writes_to_typed_store(self):
+        """_save_skills_unlocked routes through skills_store.upsert+commit."""
         import inspect
         from nexus.evolution.skill_evolver import SkillEvolver
         source = inspect.getsource(SkillEvolver._save_skills_unlocked)
-        assert '"skills"' in source
+        assert "skills_store.upsert" in source or "_upsert_to_typed_store" in source
+        assert "skills_store.commit" in source
 
-    def test_load_reads_skills_key(self):
-        """_load_skills_unlocked should read from 'skills' key."""
+    def test_load_reads_typed_store(self):
+        """_load_skills_unlocked rebuilds the projection from
+        skills_store.all() — no legacy artifact read."""
         import inspect
         from nexus.evolution.skill_evolver import SkillEvolver
         source = inspect.getsource(SkillEvolver._load_skills_unlocked)
-        assert '.get("skills"' in source
-
-    def test_load_backward_compatible(self):
-        """_load_skills_unlocked should handle old format (no 'skills' key)."""
-        import inspect
-        from nexus.evolution.skill_evolver import SkillEvolver
-        source = inspect.getsource(SkillEvolver._load_skills_unlocked)
-        # Should have fallback: data.get("skills", data)
-        assert "skills" in source and "data" in source
+        assert "skills_store.all" in source
+        assert "rune.artifacts.load" not in source
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1796,155 +1766,12 @@ class TestFeature_TwinToolIntegration:
         assert BaseTool is not None
         assert ToolResult is not None
         assert ToolRegistry is not None
+# Phase D 续 #2: MemoryProvider-specific test classes deleted
+# (recall LLM threshold, preload, access count, consolidation safety,
+# flush dirty tracking). The typed Phase J namespace stores have their
+# own test suite in nexus_core/tests/test_memory_namespaces.py and the
+# new MemoryEvolver flow uses facts_store directly.
 
-
-# ══════════════════════════════════════════════════════════════════════
-# Bug: Memory loss — access counts not persisted after search
-# ══════════════════════════════════════════════════════════════════════
-
-class TestBug_MemoryAccessCountPersistence:
-    """Access counts must be persisted to backend after search(),
-    otherwise consolidation evicts frequently-accessed memories."""
-
-    @pytest.mark.asyncio
-    async def test_search_marks_entries_dirty(self):
-        """search() should mark entries dirty for deferred flush (not persist immediately)."""
-        rune = nexus_core.builder().mock_backend().build()
-        mid = await rune.memory.add("Python tips", "agent-1")
-
-        # Search to increment access count
-        await rune.memory.search("Python", "agent-1")
-
-        # Verify in-memory update
-        entries = await rune.memory.list_all("agent-1")
-        assert entries[0].access_count >= 1
-
-        # Verify entries are in dirty set
-        assert mid in rune.memory._dirty_entries.get("agent-1", set()), \
-            "search() should mark accessed entries as dirty"
-
-        # Flush to persist, then verify survives cold restart
-        await rune.memory.flush("agent-1")
-
-        rune.memory._memories.clear()
-        rune.memory._loaded_agents.clear()
-        await rune.memory._ensure_loaded("agent-1")
-
-        reloaded = await rune.memory.list_all("agent-1")
-        assert len(reloaded) == 1
-        assert reloaded[0].access_count >= 1, \
-            "access_count should survive cold restart after flush"
-
-    @pytest.mark.asyncio
-    async def test_flush_persists_only_dirty_entries(self):
-        """flush() should persist only dirty entries, not all entries."""
-        rune = nexus_core.builder().mock_backend().build()
-        await rune.memory.add("Fact one", "agent-1")
-        await rune.memory.add("Fact two", "agent-1")
-        await rune.memory.add("Fact three", "agent-1")
-
-        # Search to modify access counts (marks results as dirty)
-        await rune.memory.search("Fact", "agent-1")
-
-        # Verify dirty set has entries
-        dirty = rune.memory._dirty_entries.get("agent-1", set())
-        assert len(dirty) > 0, "search should mark entries as dirty"
-
-        # Flush
-        await rune.memory.flush("agent-1")
-
-        # Dirty set should be cleared after flush
-        assert len(rune.memory._dirty_entries.get("agent-1", set())) == 0, \
-            "flush should clear dirty set"
-
-        # Clear and reload
-        rune.memory._memories.clear()
-        rune.memory._loaded_agents.clear()
-        await rune.memory._ensure_loaded("agent-1")
-
-        reloaded = await rune.memory.list_all("agent-1")
-        assert len(reloaded) == 3
-        for entry in reloaded:
-            assert entry.access_count >= 1
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Bug: Memory loss — consolidation deletes before validating summaries
-# ══════════════════════════════════════════════════════════════════════
-
-class TestBug_ConsolidationSafety:
-    """Consolidation must NOT delete originals when LLM produces garbage."""
-
-    @pytest.mark.asyncio
-    async def test_consolidation_aborts_on_empty_summaries(self):
-        """If LLM produces valid JSON but 0 usable summaries, abort — don't delete."""
-        from nexus.evolution.memory_evolver import MemoryEvolver
-
-        async def bad_llm(prompt):
-            # Returns valid JSON array but with items missing 'content'
-            return json.dumps([{"type": "error"}, {"note": "bad"}])
-
-        rune = nexus_core.builder().mock_backend().build()
-        evolver = MemoryEvolver(rune, "agent-1", llm_fn=bad_llm, max_memories=10)
-
-        for i in range(10):
-            await rune.memory.add(f"memory {i}", "agent-1")
-
-        count_before = await rune.memory.count("agent-1")
-        freed = await evolver._check_and_consolidate()
-
-        # Should NOT have deleted anything
-        count_after = await rune.memory.count("agent-1")
-        assert count_after == count_before, \
-            "Consolidation with 0 valid summaries should NOT delete originals"
-
-    @pytest.mark.asyncio
-    async def test_consolidation_llm_failure_preserves_all(self):
-        """When LLM completely fails, no memories should be deleted."""
-        from nexus.evolution.memory_evolver import MemoryEvolver
-
-        async def failing_llm(prompt):
-            raise RuntimeError("LLM unavailable")
-
-        rune = nexus_core.builder().mock_backend().build()
-        evolver = MemoryEvolver(rune, "agent-1", llm_fn=failing_llm, max_memories=10)
-
-        for i in range(10):
-            await rune.memory.add(f"memory {i}", "agent-1")
-
-        count_before = await rune.memory.count("agent-1")
-        freed = await evolver._check_and_consolidate()
-
-        count_after = await rune.memory.count("agent-1")
-        assert count_after == count_before, \
-            "LLM failure during consolidation should preserve all memories"
-        assert freed == 0
-
-    @pytest.mark.asyncio
-    async def test_consolidation_adds_before_deleting(self):
-        """Valid consolidation should add summaries FIRST, then delete."""
-        from nexus.evolution.memory_evolver import MemoryEvolver
-
-        async def good_llm(prompt):
-            return json.dumps([
-                {"content": "Summary A", "category": "fact", "importance": 3},
-                {"content": "Summary B", "category": "fact", "importance": 3},
-            ])
-
-        rune = nexus_core.builder().mock_backend().build()
-        evolver = MemoryEvolver(rune, "agent-1", llm_fn=good_llm, max_memories=10)
-
-        for i in range(10):
-            await rune.memory.add(f"memory about topic {i}", "agent-1")
-
-        freed = await evolver._check_and_consolidate()
-        assert freed > 0
-
-        # Summaries should exist in final state
-        all_mem = await rune.memory.list_all("agent-1")
-        contents = {m.content for m in all_mem}
-        assert "Summary A" in contents
-        assert "Summary B" in contents
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1955,14 +1782,14 @@ class TestBug_DedupWindowFull:
     """Dedup check in extract_and_store should check ALL existing memories."""
 
     def test_extraction_prompt_uses_all_memories(self):
-        """The existing_texts used for dedup should not be sliced to last 20."""
+        """The existing_texts used for dedup should not be sliced.
+        Phase D 续: dedup pulls from facts_store.all() instead of
+        rune.memory.list_all()."""
         import inspect
         from nexus.evolution.memory_evolver import MemoryEvolver
         source = inspect.getsource(MemoryEvolver.extract_and_store)
-        # Should NOT have [-20:] slice anymore
         assert "existing[-20:]" not in source
-        # Should use all existing memories
-        assert "[e.content for e in existing]" in source
+        assert "facts_store.all()" in source
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1990,15 +1817,16 @@ class TestBug_PostResponseWorkOrder:
 # Bug: Memory loss — no flush on shutdown
 # ══════════════════════════════════════════════════════════════════════
 
-class TestBug_ShutdownFlush:
-    """twin.close() should flush memory access counts before shutdown."""
+class TestPhaseD_ShutdownCommitsFacts:
+    """twin.close() should commit pending facts (creates a new
+    versioned snapshot + queues chain mirror) before shutdown.
+    Phase D 续: replaces the old rune.memory.flush call."""
 
-    def test_close_calls_memory_flush(self):
-        """close() should call rune.memory.flush()."""
+    def test_close_commits_facts(self):
         import inspect
         from nexus.twin import DigitalTwin
         source = inspect.getsource(DigitalTwin.close)
-        assert "memory.flush" in source
+        assert "self.facts.commit()" in source
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2085,45 +1913,9 @@ class TestBug_JsonTruncationFix:
         source = inspect.getsource(LLMClient.complete)
         assert "4096" in source, \
             "complete() should default to 4096 max_tokens"
+# Phase D 续 #2: MemoryProvider-specific test classes deleted
+# (recall LLM threshold, preload, access count, consolidation safety,
+# flush dirty tracking). The typed Phase J namespace stores have their
+# own test suite in nexus_core/tests/test_memory_namespaces.py and the
+# new MemoryEvolver flow uses facts_store directly.
 
-
-# ══════════════════════════════════════════════════════════════════════
-# Bug: Shutdown write storm — flush writes all entries instead of dirty
-# ══════════════════════════════════════════════════════════════════════
-
-class TestBug_FlushDirtyTracking:
-    """flush() should only write dirty entries, not all entries."""
-
-    @pytest.mark.asyncio
-    async def test_flush_skips_clean_entries(self):
-        """If no entries are dirty, flush should write nothing."""
-        rune = nexus_core.builder().mock_backend().build()
-        await rune.memory.add("Clean entry", "agent-1")
-
-        # No search → nothing dirty
-        assert len(rune.memory._dirty_entries.get("agent-1", set())) == 0
-
-        # Flush should be a no-op
-        await rune.memory.flush("agent-1")
-
-    @pytest.mark.asyncio
-    async def test_search_marks_dirty(self):
-        """search() should add accessed entries to _dirty_entries."""
-        rune = nexus_core.builder().mock_backend().build()
-        mid = await rune.memory.add("Python tips", "agent-1")
-
-        await rune.memory.search("Python", "agent-1")
-
-        dirty = rune.memory._dirty_entries.get("agent-1", set())
-        assert mid in dirty, "search() should mark accessed entries as dirty"
-
-    @pytest.mark.asyncio
-    async def test_flush_clears_dirty_set(self):
-        """After flush(), dirty set should be empty."""
-        rune = nexus_core.builder().mock_backend().build()
-        await rune.memory.add("Python tips", "agent-1")
-        await rune.memory.search("Python", "agent-1")
-
-        assert len(rune.memory._dirty_entries.get("agent-1", set())) > 0
-        await rune.memory.flush("agent-1")
-        assert len(rune.memory._dirty_entries.get("agent-1", set())) == 0

@@ -233,7 +233,7 @@ public static class PasskeyAuthService
                 <div class="card">
                     <div class="checkmark">✓</div>
                     <h1>Authentication Successful</h1>
-                    <p>You can now close this window and return to Rune Protocol.</p>
+                    <p>You can now close this window and return to Nexus.</p>
                 </div>
             </body>
             </html>

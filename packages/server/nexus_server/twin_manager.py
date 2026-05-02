@@ -397,7 +397,7 @@ async def _create_twin(user_id: str):
         logger.info("TwinManager: local mode for user %s", user_id)
 
     twin = await DigitalTwin.create(
-        name="Rune Agent",
+        name="Nexus Agent",
         owner=user_id,
         agent_id=f"user-{user_id[:8]}",
         llm_provider="gemini",
@@ -407,10 +407,54 @@ async def _create_twin(user_id: str):
         tavily_api_key=config.TAVILY_API_KEY or "",
         **chain_kwargs,
     )
+
+    # ── Wire the user-scoped file resolver onto twin's file reader.
+    # The SDK's ReadUploadedFileTool was constructed in legacy
+    # in-memory mode (no resolver) — we now point it at the SQL
+    # store so cross-turn / cross-eviction / cross-restart reads
+    # all work without the tool ever holding bytes itself. The
+    # legacy ``store()`` API stays available for unit tests that
+    # haven't been migrated yet (they don't go through twin_manager
+    # so they never trigger this branch).
+    try:
+        from nexus_server.files import (
+            resolve_file_text as _resolve_for_user,
+            list_user_files as _list_for_user,
+        )
+        if getattr(twin, "_file_reader", None) is not None:
+            twin._file_reader._resolver = (
+                lambda fname, _uid=user_id:
+                    _resolve_for_user(_uid, fname)
+            )
+            twin._file_reader._lister = (
+                lambda _uid=user_id: _list_for_user(_uid)
+            )
+            logger.debug(
+                "ReadUploadedFileTool resolver bound for user %s", user_id,
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "Could not wire SQL-backed file resolver for %s: %s",
+            user_id, e,
+        )
     # Phase B: no on_event hook installed — sync_events mirror table
     # was deleted. Twin's emits propagate only to its own EventLog
     # (the canonical store) and to the chain-activity log handler
     # (Bug 3 visibility, separate twin_chain_events table).
+
+    # ── Session metadata replay (#159 续) ──
+    # Re-apply any session_metadata events from twin's EventLog to the
+    # nexus_sessions SQL table. Covers the case where the SQL DB is
+    # fresh (server migrated, volume restored from backup, etc) but
+    # the EventLog carries the title/archive history. Idempotent —
+    # safe to run on every twin construction.
+    try:
+        from nexus_server.session_sync import replay_session_metadata
+        replay_session_metadata(user_id, twin)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(
+            "session_metadata replay skipped for %s: %s", user_id, e,
+        )
     return twin
 
 

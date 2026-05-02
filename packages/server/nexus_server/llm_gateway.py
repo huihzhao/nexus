@@ -107,6 +107,16 @@ class LLMChatRequest(BaseModel):
     enable_tools: bool = True
     # Optional file attachments; folded into the last user message
     attachments: list[Attachment] = Field(default_factory=list, max_length=20)
+    # Multi-session support: route this turn to a specific chat thread.
+    # See sessions.py / sessions_router.py for details.
+    #   * omitted / None / "" — twin's current thread (the synthetic
+    #     "default" pre-multi-session conversation).
+    #   * any other id returned from POST /api/v1/sessions — twin
+    #     saves a checkpoint of its current thread, switches to this
+    #     one (loading message history filtered by it), and runs the
+    #     turn there. The events twin appends are tagged with this id
+    #     so subsequent /agent/messages?session_id=… reads see them.
+    session_id: Optional[str] = None
 
 
 def _fold_attachments_into_messages(
@@ -593,6 +603,15 @@ async def llm_chat(
                     "content_base64": _b64.b64encode(raw).decode("ascii"),
                 }
 
+        # Phase Q fix REPLACED by the three-layer file store
+        # (nexus_server.files.resolve_file_text + uploads.extracted_text):
+        # cross-turn read no longer relies on the twin's in-memory
+        # _file_reader cache, so we don't need to hand-stash here.
+        # The /files/upload route already wrote the bytes to disk +
+        # Greenfield + emitted file_uploaded into the EventLog, and
+        # the SDK's ReadUploadedFileTool delegates to the SQL store
+        # via the resolver wired up in twin_manager._create_twin.
+
         distilled_attachments: list[Attachment] = []
         for att in request.attachments:
             if att.file_id and att.file_id in resolved_by_id:
@@ -674,21 +693,81 @@ async def llm_chat(
         # USE_TWIN=1 means we never reach it. S5/S6 will retire that
         # code entirely once tests migrate to twin stubs.
         if _twin_enabled():
-            last_user_msg = next(
+            # Extract the BARE user message (what the user typed) from
+            # the unmodified incoming request — separate from the
+            # folded view (which has [Attachments] fence + distilled
+            # summaries inlined and is the LLM-context view only).
+            bare_messages = [
+                {"role": msg.role, "content": msg.content}
+                for msg in request.messages
+            ]
+            bare_user_msg = next(
+                (m["content"] for m in reversed(bare_messages)
+                 if m.get("role") == "user"),
+                "",
+            )
+            folded_user_msg = next(
                 (m["content"] for m in reversed(messages)
                  if m.get("role") == "user"),
                 "",
             )
-            if not last_user_msg:
+            if not bare_user_msg and not folded_user_msg:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="No user message in chat request",
                 )
 
+            # Build the chip prefix used for chat-history persistence.
+            # Looks like "📎 paper.pdf, deck.pptx" — one line, no
+            # inline content. The LLM's view (folded_user_msg) still
+            # has the distilled summaries fenced in.
+            attachment_chips = ""
+            attachments_meta: list[dict] = []
+            if attachments_for_fold:
+                names = ", ".join(a.name for a in attachments_for_fold)
+                attachment_chips = f"📎 {names}"
+                # Structured metadata so /agent/messages can surface
+                # real chip UI (not fallback text). Mirrors the
+                # client's AttachmentInfo wire shape.
+                attachments_meta = [
+                    {
+                        "name": a.name,
+                        "mime": a.mime,
+                        "size_bytes": a.size_bytes,
+                    }
+                    for a in attachments_for_fold
+                ]
+
+            # ── Multi-session: validate the requested session belongs
+            # to this user (forged ids must not be able to jump into
+            # other users' threads via twin). The default session
+            # (id="" / None) and known-owned ids both pass.
+            from nexus_server import sessions as sessions_mod
+            session_id = (request.session_id or "").strip()
+            if session_id and not sessions_mod.ensure_session_exists(
+                current_user, session_id,
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Session {session_id} not found for this user",
+                )
+
             from nexus_server.twin_manager import get_twin
             try:
                 twin = await get_twin(current_user)
-                reply = await twin.chat(last_user_msg)
+                # Pass BARE user msg + chip prefix (for persistence) +
+                # folded msg (for LLM context only). Twin handles the
+                # rest. session_id="" → twin keeps current _thread_id.
+                reply = await twin.chat(
+                    bare_user_msg,
+                    session_id=session_id or None,
+                    attachment_chips=attachment_chips,
+                    attachments_meta=attachments_meta or None,
+                    folded_user_message=(
+                        folded_user_msg if folded_user_msg != bare_user_msg
+                        else None
+                    ),
+                )
             except HTTPException:
                 raise
             except Exception as twin_err:
@@ -700,9 +779,28 @@ async def llm_chat(
                     detail=f"Twin chat error: {twin_err}",
                 )
 
+            # ── Session bookkeeping: bump last_message_at + count, and
+            # opportunistically auto-title sessions still on their
+            # placeholder ("New chat"). Best-effort — a DB hiccup
+            # here must not invalidate a successful chat reply.
+            if session_id:
+                try:
+                    # Each turn = 2 events (user_message + assistant_response).
+                    sessions_mod.touch_session(
+                        current_user, session_id, delta_message_count=2,
+                    )
+                    sessions_mod.maybe_apply_autotitle(
+                        current_user, session_id, last_user_msg,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "session bookkeeping failed for %s/%s: %s",
+                        current_user, session_id, e,
+                    )
+
             logger.info(
-                "Twin chat: %d-char reply for user %s",
-                len(reply or ""), current_user,
+                "Twin chat: %d-char reply for user %s session=%s",
+                len(reply or ""), current_user, session_id or "(default)",
             )
             return LLMChatResponse(
                 role="assistant",

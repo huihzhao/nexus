@@ -9,6 +9,7 @@ from .persona_evolver import PersonaEvolver
 from .knowledge_compiler import KnowledgeCompiler
 from .social_engine import SocialEngine
 from .engine import EvolutionEngine
+from .verdict_runner import VerdictRunner
 
 __all__ = [
     "EvolutionEngine",
@@ -18,4 +19,5 @@ __all__ = [
     "PersonaEvolver",
     "KnowledgeCompiler",
     "SocialEngine",
+    "VerdictRunner",
 ]

@@ -1,21 +1,59 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:RuneDesktop.UI.ViewModels"
+             xmlns:local="clr-namespace:RuneDesktop.UI.Views"
              x:Class="RuneDesktop.UI.Views.ChatView"
              Background="{StaticResource SurfaceBaseBrush}">
 
   <Panel>
     <!-- ══════════════════════════════════════════════════════════════
-         Main two-pane layout: SIDEBAR (320px) | CHAT
-         The slide-over detail panel is layered ON TOP of the chat pane
+         Three-pane layout: SIDEBAR (320px) | CHAT (flex) | COGNITION (380px)
+         The slide-over detail panel is layered ON TOP of all three
          when DetailPanel.IsOpen is true.
-         ══════════════════════════════════════════════════════════════ -->
-    <Grid ColumnDefinitions="320,*">
 
-      <!-- ═════ LEFT SIDEBAR ═════════════════════════════════════════ -->
+         The Cognition column is always visible — that's the whole
+         point. It runs four live streams (Thinking / Summarized /
+         On-chain / Working directory) refreshed every 2s so the user
+         can see the agent thinking, learning, and committing to chain
+         in real time. No clicks required.
+         ══════════════════════════════════════════════════════════════ -->
+    <!-- Three resizable columns. Default widths (320 / * / 380) match
+         the pre-Phase-Q layout but are user-draggable via the two
+         GridSplitters between them. Min widths keep any column from
+         being collapsed to nothing. -->
+    <Grid>
+      <Grid.ColumnDefinitions>
+        <!-- Width="Auto" on the two side-column tracks so they
+             collapse to 0 when their inner Border IsVisible=false
+             (toggled via IsActivityHidden / Cognition.IsHidden).
+             A `Width=320` column track DOES NOT collapse just because
+             its content is invisible — Avalonia keeps the track at
+             its declared width, and the chat column never reclaims
+             the space. Switching to Auto + Width on the inner Border
+             gives us "track collapses → chat fills it" automatically.
+             That bug was visible after collapsing both panels: the
+             chat surface stayed 380 px narrower than the window. -->
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*" MinWidth="380"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+
+      <!-- ═════ LEFT SIDEBAR ═════════════════════════════════════════
+           Visibility bound to ChatViewModel.IsActivityHidden so the
+           user can collapse the entire activity column from the top
+           bar — same pattern as Cognition (right column) and the
+           session rail. Width is fixed at 320 px when visible (used
+           to be a `*` column with MinWidth that prevented total
+           collapse). -->
       <Border Grid.Column="0"
+              Width="320"
               Background="{StaticResource SurfaceMutedBrush}"
               BorderThickness="0,0,1,0"
-              BorderBrush="{StaticResource DividerBrush}">
+              BorderBrush="{StaticResource DividerBrush}"
+              IsVisible="{Binding IsActivityHidden,
+                          Converter={x:Static BoolConverters.Not}}">
         <Grid RowDefinitions="Auto,Auto,Auto,*,Auto">
 
           <!-- ── Identity card ─────────────────────────────────────── -->
@@ -24,12 +62,12 @@
               <StackPanel Orientation="Horizontal" Spacing="10">
                 <Border Width="36" Height="36" CornerRadius="10"
                         Background="{StaticResource BrandAccentBrush}">
-                  <TextBlock Text="R" FontSize="17" FontWeight="Bold"
+                  <TextBlock Text="N" FontSize="17" FontWeight="Bold"
                              Foreground="{StaticResource TextOnAccentBrush}"
                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
                 <StackPanel VerticalAlignment="Center" Spacing="2">
-                  <TextBlock Text="Rune Agent"
+                  <TextBlock Text="Digital Twin"
                              FontSize="14" FontWeight="SemiBold"
                              Foreground="{StaticResource TextPrimaryBrush}"/>
                   <StackPanel Orientation="Horizontal" Spacing="6">
@@ -94,82 +132,76 @@
               </StackPanel>
             </UniformGrid>
             <StackPanel Spacing="2">
-              <Button Content="📚  Browse memories"
-                      Command="{Binding BrowseMemoriesCommand}"
-                      Classes="sidebar" FontSize="12"/>
-              <Button Content="🔗  Browse anchors"
-                      Command="{Binding BrowseAnchorsCommand}"
-                      Classes="sidebar" FontSize="12"/>
+              <Button Content="🧠  Thinking"
+                      Command="{Binding BrowseThinkingCommand}"
+                      Classes="sidebar" FontSize="12"
+                      ToolTip.Tip="Inner monologue — what the agent is hearing, recalling, deciding right now (auto-refreshes every 2s)."/>
+              <Button Content="📋  Progress"
+                      Command="{Binding BrowseProgressCommand}"
+                      Classes="sidebar" FontSize="12"
+                      ToolTip.Tip="Planning + activity — pending evolution proposals on top, completed timeline below."/>
+              <Button Content="🗂  Work directory"
+                      Command="{Binding BrowseWorkdirCommand}"
+                      Classes="sidebar" FontSize="12"
+                      ToolTip.Tip="Greenfield bucket tree — agents/{user}/{memory,artifacts,sessions}/…"/>
+              <Border Height="1" Background="{StaticResource DividerBrush}"
+                      Margin="6,4,6,4"/>
+              <!-- Phase D 续 / #159 v3 — sidebar fully simplified.
+                   Browse memories / Brain namespaces / Browse anchors /
+                   Brain detail buttons all retired: their contents
+                   are now in the always-visible Cognition right column
+                   (Brain at a Glance + Learning Timeline + Data Flow +
+                   Just Learned + Chain Health). Only the Evolution
+                   timeline slide-over remains because of its Approve/
+                   Revert moderation surface. -->
+              <Button Content="🧬  Evolution timeline"
+                      Command="{Binding BrowseEvolutionCommand}"
+                      Classes="sidebar" FontSize="12"
+                      ToolTip.Tip="Falsifiable evolution: every persona / memory edit ships with a verdict (kept / warning / reverted). Inline Approve / Revert buttons let you override the auto-grader."/>
             </StackPanel>
           </StackPanel>
 
-          <!-- ── Activity Stream ─────────────────────────────────────── -->
-          <Grid Grid.Row="3" RowDefinitions="Auto,*">
-            <Grid Grid.Row="0" Margin="16,8,16,4" ColumnDefinitions="*,Auto">
-              <TextBlock Grid.Column="0" Text="ACTIVITY"
-                         FontSize="10" FontWeight="Bold"
-                         Foreground="{StaticResource TextTertiaryBrush}"/>
-              <Button Grid.Column="1" Content="↻"
-                      Command="{Binding Activity.RefreshNowCommand}"
-                      Classes="ghost" FontSize="12"
-                      Padding="6,1" ToolTip.Tip="Refresh"/>
-            </Grid>
-
-            <Border Grid.Row="1" Margin="8,0,8,8">
-              <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <Panel>
-                  <!-- Empty state -->
-                  <TextBlock Text="No activity yet — say hi to your agent."
-                             FontSize="11"
-                             Foreground="{StaticResource TextTertiaryBrush}"
-                             TextWrapping="Wrap" Margin="10,8"
-                             IsVisible="{Binding Activity.IsEmpty}"/>
-                  <!-- Items -->
-                  <ItemsControl ItemsSource="{Binding Activity.Items}"
-                                IsVisible="{Binding !Activity.IsEmpty}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate>
-                        <Border Padding="8,6" Margin="2,2" CornerRadius="6"
-                                Background="Transparent">
-                          <Grid ColumnDefinitions="22,*"
-                                ColumnSpacing="8">
-                            <Border Grid.Column="0" Width="22" Height="22"
-                                    CornerRadius="11"
-                                    Background="{Binding IconBg}">
-                              <TextBlock Text="{Binding Icon}" FontSize="11"
-                                         FontWeight="Bold"
-                                         Foreground="{Binding IconFg}"
-                                         HorizontalAlignment="Center"
-                                         VerticalAlignment="Center"/>
-                            </Border>
-                            <StackPanel Grid.Column="1" Spacing="2">
-                              <TextBlock Text="{Binding Summary}"
-                                         FontSize="11"
-                                         Foreground="{StaticResource TextPrimaryBrush}"
-                                         TextWrapping="Wrap"
-                                         MaxLines="3"
-                                         TextTrimming="CharacterEllipsis"/>
-                              <TextBlock Text="{Binding RelativeTime}"
-                                         FontSize="9"
-                                         Foreground="{StaticResource TextTertiaryBrush}"/>
-                            </StackPanel>
-                          </Grid>
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </Panel>
-              </ScrollViewer>
-            </Border>
-          </Grid>
+          <!-- ── Phase D 续 / #159 v3 — Activity Stream retired.
+               Raw event-log spam (SkillEvolver / MemoryEvolver / etc.)
+               now lives in the Cognition column's "Just Learned" feed
+               in curated, just-the-content form. Reclaiming this
+               vertical space gives more room for the chat list / file
+               drawer / etc. -->
+          <Border Grid.Row="3"/>
         </Grid>
       </Border>
 
-      <!-- ═════ RIGHT: CHAT AREA ════════════════════════════════════ -->
-      <Grid Grid.Column="1" RowDefinitions="*,Auto,Auto">
+      <!-- Splitter between left sidebar and chat surface. ResizeBehavior
+           PreviousAndNext lets the user push width between the two
+           neighbouring columns by dragging this 4-px gutter. Hidden
+           when the activity sidebar is collapsed — no point dragging
+           an invisible gutter. -->
+      <GridSplitter Grid.Column="1" Width="4"
+                    ResizeBehavior="PreviousAndNext"
+                    ResizeDirection="Columns"
+                    Background="{StaticResource DividerBrush}"
+                    HorizontalAlignment="Stretch"
+                    IsVisible="{Binding IsActivityHidden,
+                                Converter={x:Static BoolConverters.Not}}"/>
 
-        <!-- Messages -->
-        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
+      <!-- ═════ MIDDLE: CHAT AREA ═══════════════════════════════════
+           Drag-and-drop is enabled on this whole column so users can
+           drop files anywhere in the chat surface (matching Claude /
+           Cowork). Code-behind wires DragOver / Drop into
+           ChatViewModel.HandleDroppedFilesAsync. The IsDraggingOver
+           overlay shows a tinted "Drop to attach" hint while the
+           cursor carries files over the area. -->
+      <Grid Grid.Column="2" RowDefinitions="*,Auto,Auto"
+            x:Name="ChatColumnGrid"
+            DragDrop.AllowDrop="True">
+
+        <!-- Messages — horizontal scroll set to Auto so any single
+             content block (code blocks, long URLs, wide tables) that
+             overflows can scroll horizontally instead of getting
+             clipped by the column. Vertical scroll is always Auto. -->
+        <ScrollViewer Grid.Row="0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Auto"
                       x:Name="MessageScrollViewer">
           <Panel>
             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -178,11 +210,11 @@
               <Border Width="56" Height="56" CornerRadius="14"
                       Background="{StaticResource BrandAccentBrush}"
                       HorizontalAlignment="Center">
-                <TextBlock Text="R" FontSize="26" FontWeight="Bold"
+                <TextBlock Text="N" FontSize="26" FontWeight="Bold"
                            Foreground="{StaticResource TextOnAccentBrush}"
                            HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
-              <TextBlock Text="Say hi to your Rune agent"
+              <TextBlock Text="Say hi to your Digital Twin"
                          FontSize="15" FontWeight="SemiBold"
                          Foreground="{StaticResource TextPrimaryBrush}"
                          HorizontalAlignment="Center"/>
@@ -211,10 +243,62 @@
                       </Border>
                       <Border CornerRadius="14" Padding="14,10" MaxWidth="640"
                               Background="{Binding BubbleColor}">
-                        <StackPanel Spacing="4">
-                          <TextBlock Text="{Binding Content}" FontSize="14"
-                                     TextWrapping="Wrap"
-                                     Foreground="{Binding TextColor}"/>
+                        <StackPanel Spacing="6">
+                          <!-- Phase Q: structured attachment chips
+                               above the text body. Bound to the
+                               message's Attachments collection — set
+                               from history reload OR optimistic send.
+                               When empty (most messages, all assistant
+                               messages), the strip collapses. -->
+                          <ItemsControl ItemsSource="{Binding Attachments}"
+                                        IsVisible="{Binding HasAttachments}">
+                            <ItemsControl.ItemsPanel>
+                              <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal"/>
+                              </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <Border Margin="0,0,6,4"
+                                        Padding="8,5"
+                                        CornerRadius="999"
+                                        Background="#33000000"
+                                        BorderBrush="#55FFFFFF"
+                                        BorderThickness="1">
+                                  <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="{Binding Glyph}"
+                                               FontSize="14"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding Name}"
+                                               FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{Binding $parent[ItemsControl].((vm:ChatMessageViewModel)DataContext).TextColor}"
+                                               TextTrimming="CharacterEllipsis"
+                                               MaxWidth="220"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding SizeText}"
+                                               FontSize="10"
+                                               Foreground="{Binding $parent[ItemsControl].((vm:ChatMessageViewModel)DataContext).TimeColor}"
+                                               VerticalAlignment="Center"
+                                               IsVisible="{Binding SizeText,
+                                                           Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                                  </StackPanel>
+                                </Border>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                          <!-- Markdown body: in-house renderer that
+                               handles headers / bold / italic / inline
+                               code / fenced code blocks (with copy
+                               button) / lists / blockquotes / links.
+                               User bubbles are short and rarely use
+                               markdown so the cost is negligible
+                               there too; we render uniformly so the
+                               agent can format e.g. `code` mentions
+                               in user messages too. -->
+                          <local:MarkdownView Markdown="{Binding Content}"
+                                              BodyForeground="{Binding TextColor}"
+                                              IsVisible="{Binding Content,
+                                                          Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
                           <TextBlock Text="{Binding FormattedTime}" FontSize="10"
                                      Foreground="{Binding TimeColor}"
                                      HorizontalAlignment="Right"/>
@@ -236,6 +320,35 @@
             </ItemsControl>
           </Panel>
         </ScrollViewer>
+
+        <!-- Drag-over overlay: shows a tinted hint while files are
+             being dragged into the chat column. Visibility bound to
+             ChatViewModel.IsDraggingOverChat (set in code-behind on
+             DragEnter / cleared on DragLeave / Drop). -->
+        <Border Grid.Row="0"
+                Background="#CC2A1F4D"
+                BorderThickness="2"
+                BorderBrush="{StaticResource BrandAccentBrush}"
+                CornerRadius="10"
+                Margin="16"
+                IsVisible="{Binding IsDraggingOverChat}"
+                IsHitTestVisible="False">
+          <StackPanel HorizontalAlignment="Center"
+                      VerticalAlignment="Center"
+                      Spacing="8">
+            <TextBlock Text="📎"
+                       FontSize="48"
+                       HorizontalAlignment="Center"/>
+            <TextBlock Text="Drop to attach"
+                       FontSize="18" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextPrimaryBrush}"
+                       HorizontalAlignment="Center"/>
+            <TextBlock Text="Files will be uploaded and attached to your next message"
+                       FontSize="12"
+                       Foreground="{StaticResource TextSecondaryBrush}"
+                       HorizontalAlignment="Center"/>
+          </StackPanel>
+        </Border>
 
         <!-- Typing indicator -->
         <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8"
@@ -324,6 +437,1058 @@
           </StackPanel>
         </Border>
       </Grid>
+
+      <!-- Splitter between chat surface and cognition column.
+           Hidden when the cognition panel is hidden (no point dragging
+           an invisible panel). -->
+      <GridSplitter Grid.Column="3" Width="4"
+                    ResizeBehavior="PreviousAndNext"
+                    ResizeDirection="Columns"
+                    Background="{StaticResource DividerBrush}"
+                    HorizontalAlignment="Stretch"
+                    IsVisible="{Binding Cognition.IsHidden,
+                                Converter={x:Static BoolConverters.Not}}"/>
+
+      <!-- ═════ FAR-RIGHT: ALWAYS-ON COGNITION COLUMN ═══════════════
+           Live mirror of the agent's "head + hand": what it's
+           thinking right now, what it has learned (compactions /
+           extractions / skills / persona evolutions), what it has
+           anchored on BSC, and the live Greenfield bucket tree.
+           Refreshes every 2s — no clicks needed.
+
+           Visibility bound to Cognition.IsHidden — toggle from the
+           top bar's Cmd+Shift+\\ button.
+           ════════════════════════════════════════════════════════ -->
+      <Border Grid.Column="4"
+              Width="380"
+              Background="{StaticResource SurfaceMutedBrush}"
+              BorderThickness="1,0,0,0"
+              BorderBrush="{StaticResource DividerBrush}"
+              IsVisible="{Binding Cognition.IsHidden,
+                          Converter={x:Static BoolConverters.Not}}">
+        <Grid RowDefinitions="Auto,*">
+          <!-- Header -->
+          <Border Grid.Row="0" Padding="14,12,14,8"
+                  BorderThickness="0,0,0,1"
+                  BorderBrush="{StaticResource DividerBrush}">
+            <StackPanel Spacing="4">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="🧠" FontSize="16"
+                           VerticalAlignment="Center"/>
+                <TextBlock Text="Live Cognition"
+                           FontSize="13" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextPrimaryBrush}"
+                           VerticalAlignment="Center"/>
+                <Border Width="6" Height="6" CornerRadius="3"
+                        Background="#7DBC68" VerticalAlignment="Center"
+                        IsVisible="{Binding Cognition.IsPolling}"/>
+              </StackPanel>
+              <TextBlock FontSize="10"
+                         Foreground="{StaticResource TextTertiaryBrush}">
+                <Run Text="A self-evolving agent — refreshing every 2s · last "/>
+                <Run Text="{Binding Cognition.LastUpdated}"/>
+              </TextBlock>
+            </StackPanel>
+          </Border>
+
+          <!-- Body: stacked sections, scrollable -->
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="12,10,12,12" Spacing="14">
+
+              <!-- ═════════════════════════════════════════════════
+                   SECTION 1 — BRAIN AT A GLANCE (#159 v3)
+                   5 horizontal cards in a UniformGrid, matching the
+                   agreed design. Each card shows namespace name +
+                   per-namespace display value (Persona = version
+                   "v0042"; others = count) + smart-cadence delta
+                   (today / this week / active) + 3-dot chain status.
+                   ═════════════════════════════════════════════════ -->
+              <StackPanel Spacing="6">
+                <TextBlock Text="SECTION 1 — BRAIN AT A GLANCE"
+                           FontSize="10" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           ToolTip.Tip="One card per typed namespace. Dots: ● local · ● mirrored to Greenfield · ● anchored on BSC."/>
+                <!-- WrapPanel — cards reflow to a second row when the
+                     cognition column is too narrow to fit all 5 in
+                     one row. Each card has a fixed minimum width so
+                     content stays readable regardless of column size. -->
+                <ItemsControl ItemsSource="{Binding Cognition.Brain.Glance}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <WrapPanel Orientation="Horizontal"/>
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Width="66" Margin="2,0,2,4"
+                              Padding="6,8" CornerRadius="6"
+                              Background="{StaticResource SurfaceCardBrush}">
+                        <StackPanel Spacing="2">
+                          <TextBlock Text="{Binding DisplayName}"
+                                     FontSize="9"
+                                     Foreground="{StaticResource TextSecondaryBrush}"
+                                     TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="{Binding DisplayValue}"
+                                     FontSize="15" FontWeight="Bold"
+                                     Foreground="{StaticResource TextPrimaryBrush}"
+                                     TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="{Binding DeltaText}"
+                                     FontSize="8"
+                                     Foreground="{StaticResource SuccessBrush}"
+                                     TextWrapping="Wrap"
+                                     IsVisible="{Binding DeltaText,
+                                                 Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                          <StackPanel Orientation="Horizontal"
+                                      Spacing="2" Margin="0,2,0,0">
+                            <Ellipse Width="5" Height="5"
+                                     Fill="{StaticResource SuccessBrush}"
+                                     IsVisible="{Binding DotLocal}"/>
+                            <Ellipse Width="5" Height="5"
+                                     Fill="{StaticResource SuccessBrush}"
+                                     IsVisible="{Binding DotMirrored}"/>
+                            <Ellipse Width="5" Height="5"
+                                     Stroke="{StaticResource DividerBrush}"
+                                     StrokeThickness="1"
+                                     IsVisible="{Binding !DotMirrored}"/>
+                            <Ellipse Width="5" Height="5"
+                                     Fill="{StaticResource SuccessBrush}"
+                                     IsVisible="{Binding DotAnchored}"/>
+                            <Ellipse Width="5" Height="5"
+                                     Stroke="{StaticResource DividerBrush}"
+                                     StrokeThickness="1"
+                                     IsVisible="{Binding !DotAnchored}"/>
+                          </StackPanel>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- ═════════════════════════════════════════════════
+                   SECTION 2 — LEARNING TIMELINE (last 7 days)
+                   Multi-line cumulative chart. Polyline.Points
+                   strings come from BrainPanelVM precomputed against
+                   TimelineChartWidth (320) × Height (110).
+                   ═════════════════════════════════════════════════ -->
+              <StackPanel Spacing="6">
+                <TextBlock Text="SECTION 2 — LEARNING TIMELINE (last 7 days)"
+                           FontSize="10" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           ToolTip.Tip="Cumulative items learned per namespace, day-by-day."/>
+                <Border Padding="8,10" CornerRadius="8"
+                        Background="{StaticResource SurfaceCardBrush}">
+                  <StackPanel Spacing="6">
+                    <TextBlock IsVisible="{Binding !Cognition.Brain.TimelineHasData}"
+                               Text="(no learning yet — chat with the agent and lines will start tracing)"
+                               FontSize="11"
+                               Foreground="{StaticResource TextTertiaryBrush}"
+                               TextWrapping="Wrap"
+                               HorizontalAlignment="Center"
+                               Margin="0,30"/>
+                    <Canvas Width="320" Height="110"
+                            HorizontalAlignment="Center"
+                            IsVisible="{Binding Cognition.Brain.TimelineHasData}">
+                      <Line StartPoint="0,110" EndPoint="320,110"
+                            Stroke="{StaticResource DividerBrush}"
+                            StrokeThickness="1"/>
+                      <!-- All 5 polylines use the StringToPointsConverter
+                           because Avalonia's binding pipeline does NOT
+                           auto-invoke the Polyline.Points type converter
+                           — without this converter the strings are
+                           silently dropped and the chart stays blank. -->
+                      <Polyline Points="{Binding Cognition.Brain.FactsLinePoints,
+                                          Converter={x:Static local:StringToPointsConverter.Instance}}"
+                                Stroke="#5AAEFF" StrokeThickness="2"
+                                StrokeJoin="Round"/>
+                      <Polyline Points="{Binding Cognition.Brain.SkillsLinePoints,
+                                          Converter={x:Static local:StringToPointsConverter.Instance}}"
+                                Stroke="#7DBC68" StrokeThickness="2"
+                                StrokeJoin="Round"/>
+                      <Polyline Points="{Binding Cognition.Brain.KnowledgeLinePoints,
+                                          Converter={x:Static local:StringToPointsConverter.Instance}}"
+                                Stroke="#E07A4D" StrokeThickness="2"
+                                StrokeJoin="Round"/>
+                      <Polyline Points="{Binding Cognition.Brain.PersonaLinePoints,
+                                          Converter={x:Static local:StringToPointsConverter.Instance}}"
+                                Stroke="#F0B90B" StrokeThickness="1.5"
+                                StrokeDashArray="3,3"
+                                StrokeJoin="Round"/>
+                      <Polyline Points="{Binding Cognition.Brain.EpisodesLinePoints,
+                                          Converter={x:Static local:StringToPointsConverter.Instance}}"
+                                Stroke="#9CA3AF" StrokeThickness="1.5"
+                                StrokeDashArray="3,3"
+                                StrokeJoin="Round"/>
+                    </Canvas>
+                    <ItemsControl ItemsSource="{Binding Cognition.Brain.TimelineDayLabels}"
+                                  IsVisible="{Binding Cognition.Brain.TimelineHasData}"
+                                  Width="320" HorizontalAlignment="Center">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                          <UniformGrid Rows="1"/>
+                        </ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <TextBlock Text="{Binding}"
+                                     FontSize="9"
+                                     Foreground="{StaticResource TextTertiaryBrush}"
+                                     HorizontalAlignment="Center"/>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <!-- Legend -->
+                    <ItemsControl IsVisible="{Binding Cognition.Brain.TimelineHasData}"
+                                  HorizontalAlignment="Center" Margin="0,2,0,0">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                          <WrapPanel Orientation="Horizontal"/>
+                        </ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <StackPanel Orientation="Horizontal" Spacing="3" Margin="4,0">
+                        <Border Width="10" Height="2" Background="#5AAEFF"
+                                VerticalAlignment="Center"/>
+                        <TextBlock Text="Facts" FontSize="9"
+                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                      </StackPanel>
+                      <StackPanel Orientation="Horizontal" Spacing="3" Margin="4,0">
+                        <Border Width="10" Height="2" Background="#7DBC68"
+                                VerticalAlignment="Center"/>
+                        <TextBlock Text="Skills" FontSize="9"
+                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                      </StackPanel>
+                      <StackPanel Orientation="Horizontal" Spacing="3" Margin="4,0">
+                        <Border Width="10" Height="2" Background="#E07A4D"
+                                VerticalAlignment="Center"/>
+                        <TextBlock Text="Knowledge" FontSize="9"
+                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                      </StackPanel>
+                      <StackPanel Orientation="Horizontal" Spacing="3" Margin="4,0">
+                        <Border Width="10" Height="2" Background="#F0B90B"
+                                VerticalAlignment="Center"/>
+                        <TextBlock Text="Persona" FontSize="9"
+                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                      </StackPanel>
+                      <StackPanel Orientation="Horizontal" Spacing="3" Margin="4,0">
+                        <Border Width="10" Height="2" Background="#9CA3AF"
+                                VerticalAlignment="Center"/>
+                        <TextBlock Text="Episodes" FontSize="9"
+                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                      </StackPanel>
+                    </ItemsControl>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+
+              <!-- ═════════════════════════════════════════════════
+                   SECTION 3 — DATA FLOW (this turn)
+                   Compact DAG: Chat turn → Facts +N | Skills +N
+                                         → Knowledge ⏸ N/M to fire
+                                         → Persona ⏸ Nd to next
+                   Skills branches off Chat turn but is a leaf.
+                   ═════════════════════════════════════════════════ -->
+              <StackPanel Spacing="6">
+                <TextBlock Text="SECTION 3 — DATA FLOW (this turn)"
+                           FontSize="10" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           ToolTip.Tip="The pipeline turning chat into long-term knowledge. ⏸ means the evolver is accumulating but hasn't fired yet."/>
+                <!-- Compact vertical DAG that fits a 320 px column.
+                     Layout (top → bottom):
+                       Chat turn (N turns)
+                          │
+                          ├──► Skills +N (learned strategy)
+                          │       (leaf — no forward arrow)
+                          ▼
+                       Facts +N (preference, fact)
+                          │
+                          ▼
+                       Knowledge ⏸ N/M to compile
+                          │
+                          ▼ (dashed = slow path)
+                       Persona ⏸ Nd to next                              -->
+                <Border Padding="10,10" CornerRadius="8"
+                        Background="{StaticResource SurfaceCardBrush}">
+                  <StackPanel Spacing="0" HorizontalAlignment="Center">
+                    <!-- Chat turn -->
+                    <Border Padding="8,5" CornerRadius="5"
+                            Background="#1A1F2A"
+                            BorderBrush="{StaticResource DividerBrush}"
+                            BorderThickness="1">
+                      <StackPanel Spacing="1" HorizontalAlignment="Center">
+                        <TextBlock Text="Chat turn" FontSize="10"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                        <TextBlock FontSize="8"
+                                   Foreground="{StaticResource TextTertiaryBrush}">
+                          <Run Text="{Binding Cognition.Turns.Count}"/>
+                          <Run Text=" turns"/>
+                        </TextBlock>
+                      </StackPanel>
+                    </Border>
+
+                    <!-- Branch arrow: down + right into Skills -->
+                    <Grid ColumnDefinitions="*,Auto,Auto,Auto" Width="220">
+                      <Path Grid.Column="0" Stretch="None"
+                            Stroke="{StaticResource TextTertiaryBrush}"
+                            StrokeThickness="1"
+                            HorizontalAlignment="Right"
+                            Margin="0,0,40,0"
+                            Data="M 50,0 L 50,16"/>
+                      <Path Grid.Column="1" Stretch="None"
+                            Stroke="{StaticResource TextTertiaryBrush}"
+                            StrokeThickness="1"
+                            Data="M 0,8 L 30,8 M 26,5 L 30,8 L 26,11"/>
+                      <Border Grid.Column="2"
+                              Padding="6,3" CornerRadius="5"
+                              Background="#1F2E25"
+                              BorderBrush="#7DBC68"
+                              BorderThickness="1"
+                              VerticalAlignment="Center">
+                        <StackPanel Spacing="0">
+                          <TextBlock FontSize="10" FontWeight="SemiBold"
+                                     Foreground="#A8D596">
+                            <Run Text="Skills +"/>
+                            <Run Text="{Binding Cognition.Brain.Glance[2].DeltaThisWeek}"/>
+                          </TextBlock>
+                          <TextBlock Text="learned strategy"
+                                     FontSize="8"
+                                     Foreground="#7DBC68"/>
+                        </StackPanel>
+                      </Border>
+                    </Grid>
+
+                    <!-- Down arrow (Chat → Facts) -->
+                    <Path Stretch="None"
+                          Stroke="{StaticResource TextTertiaryBrush}"
+                          StrokeThickness="1"
+                          Data="M 50,0 L 50,12 M 47,8 L 50,12 L 53,8"
+                          Width="100" Height="14"/>
+
+                    <!-- Facts -->
+                    <Border Padding="8,5" CornerRadius="5"
+                            Background="#1E2C3F"
+                            BorderBrush="#5AAEFF"
+                            BorderThickness="1">
+                      <StackPanel Spacing="1" HorizontalAlignment="Center">
+                        <TextBlock FontSize="10" FontWeight="SemiBold"
+                                   Foreground="#9CC6FF">
+                          <Run Text="Facts +"/>
+                          <Run Text="{Binding Cognition.Brain.Glance[3].DeltaToday}"/>
+                        </TextBlock>
+                        <TextBlock Text="preference, fact"
+                                   FontSize="8"
+                                   Foreground="#5AAEFF"/>
+                      </StackPanel>
+                    </Border>
+
+                    <!-- Down arrow (Facts → Knowledge) -->
+                    <Path Stretch="None"
+                          Stroke="{StaticResource TextTertiaryBrush}"
+                          StrokeThickness="1"
+                          Data="M 50,0 L 50,12 M 47,8 L 50,12 L 53,8"
+                          Width="100" Height="14"/>
+
+                    <!-- Knowledge -->
+                    <Border Padding="8,5" CornerRadius="5"
+                            Background="#2F2218"
+                            BorderBrush="#E07A4D"
+                            BorderThickness="1">
+                      <StackPanel Spacing="1" HorizontalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" Spacing="3"
+                                    HorizontalAlignment="Center">
+                          <TextBlock Text="Knowledge"
+                                     FontSize="10" FontWeight="SemiBold"
+                                     Foreground="#F0B89A"/>
+                          <TextBlock Text="⏸"
+                                     FontSize="9"
+                                     Foreground="#E07A4D"
+                                     VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock FontSize="8"
+                                   Foreground="#E07A4D"
+                                   Text="{Binding Cognition.Brain.KnowledgePressureLabel}"
+                                   HorizontalAlignment="Center"/>
+                      </StackPanel>
+                    </Border>
+
+                    <!-- Down arrow (Knowledge → Persona, dashed) -->
+                    <Path Stretch="None"
+                          Stroke="{StaticResource TextTertiaryBrush}"
+                          StrokeThickness="1"
+                          StrokeDashArray="3,2"
+                          Data="M 50,0 L 50,12 M 47,8 L 50,12 L 53,8"
+                          Width="100" Height="14"/>
+
+                    <!-- Persona -->
+                    <Border Padding="8,5" CornerRadius="5"
+                            Background="#2A2335"
+                            BorderBrush="#B589F5"
+                            BorderThickness="1">
+                      <StackPanel Spacing="1" HorizontalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" Spacing="3"
+                                    HorizontalAlignment="Center">
+                          <TextBlock Text="Persona"
+                                     FontSize="10" FontWeight="SemiBold"
+                                     Foreground="#D5BDFA"/>
+                          <TextBlock Text="⏸"
+                                     FontSize="9"
+                                     Foreground="#B589F5"
+                                     VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock FontSize="8"
+                                   Foreground="#B589F5"
+                                   Text="{Binding Cognition.Brain.PersonaPressureLabel}"
+                                   HorizontalAlignment="Center"/>
+                      </StackPanel>
+                    </Border>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+
+              <!-- Section 1: Thinking — live SSE, grouped by turn.
+                   Each turn renders as a card with a header and a
+                   list of typed steps. Current turn pulses on its
+                   latest step; previous turns collapse to a single
+                   header line and re-expand on click. -->
+              <StackPanel Spacing="6">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Grid.Column="0" Text="THINKING"
+                             FontSize="10" FontWeight="Bold"
+                             Foreground="{StaticResource TextTertiaryBrush}"/>
+                  <Border Grid.Column="1"
+                          CornerRadius="999"
+                          Padding="6,1"
+                          Background="#1B3220"
+                          IsVisible="{Binding Cognition.StreamStatus,
+                                      Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                    <TextBlock Text="{Binding Cognition.StreamStatus}"
+                               FontSize="9" FontWeight="SemiBold"
+                               Foreground="{StaticResource SuccessBrush}"
+                               VerticalAlignment="Center"/>
+                  </Border>
+                </Grid>
+                <TextBlock IsVisible="{Binding Cognition.ThinkingEmpty}"
+                           Text="(no thinking yet — send a message and watch the agent reason)"
+                           FontSize="11"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           TextWrapping="Wrap"/>
+
+                <ItemsControl ItemsSource="{Binding Cognition.Turns}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Margin="0,0,0,8" Padding="0" CornerRadius="8"
+                              Background="{StaticResource SurfaceCardBrush}"
+                              BorderBrush="{StaticResource DividerBrush}"
+                              BorderThickness="1">
+                        <StackPanel>
+                          <!-- Turn header: click to expand/collapse -->
+                          <Button Background="Transparent"
+                                  BorderThickness="0"
+                                  Padding="10,7"
+                                  HorizontalAlignment="Stretch"
+                                  HorizontalContentAlignment="Stretch"
+                                  Command="{Binding ToggleExpandedCommand}">
+                            <Grid ColumnDefinitions="Auto,*,Auto">
+                              <TextBlock Grid.Column="0"
+                                         Text="▾"
+                                         FontSize="10"
+                                         IsVisible="{Binding IsExpanded}"
+                                         Foreground="{StaticResource TextSecondaryBrush}"
+                                         VerticalAlignment="Center"
+                                         Margin="0,0,8,0"/>
+                              <TextBlock Grid.Column="0"
+                                         Text="▸"
+                                         FontSize="10"
+                                         IsVisible="{Binding !IsExpanded}"
+                                         Foreground="{StaticResource TextSecondaryBrush}"
+                                         VerticalAlignment="Center"
+                                         Margin="0,0,8,0"/>
+                              <StackPanel Grid.Column="1" Spacing="1">
+                                <TextBlock Text="{Binding HeaderText}"
+                                           FontSize="11" FontWeight="SemiBold"
+                                           Foreground="{StaticResource TextPrimaryBrush}"/>
+                                <TextBlock Text="{Binding Headline}"
+                                           FontSize="10"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           TextTrimming="CharacterEllipsis"
+                                           IsVisible="{Binding Headline,
+                                                     Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                              </StackPanel>
+                              <Border Grid.Column="2"
+                                      CornerRadius="999"
+                                      Padding="5,1"
+                                      Background="#1B3220"
+                                      IsVisible="{Binding IsCurrent}"
+                                      VerticalAlignment="Center">
+                                <TextBlock Text="live"
+                                           FontSize="9" FontWeight="SemiBold"
+                                           Foreground="{StaticResource SuccessBrush}"/>
+                              </Border>
+                            </Grid>
+                          </Button>
+
+                          <!-- Steps list (visible only when expanded) -->
+                          <ItemsControl ItemsSource="{Binding Steps}"
+                                        IsVisible="{Binding IsExpanded}"
+                                        Margin="10,0,10,8">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <Grid ColumnDefinitions="22,*"
+                                      Margin="0,3,0,3">
+                                  <!-- Typed dot icon -->
+                                  <Border Grid.Column="0"
+                                          Width="18" Height="18"
+                                          CornerRadius="9"
+                                          Background="{Binding AccentColor}"
+                                          VerticalAlignment="Top"
+                                          Margin="0,2,4,0">
+                                    <TextBlock Text="{Binding Glyph}"
+                                               FontSize="10" FontWeight="SemiBold"
+                                               Foreground="White"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"/>
+                                  </Border>
+
+                                  <StackPanel Grid.Column="1" Spacing="1">
+                                    <Grid ColumnDefinitions="*,Auto,Auto">
+                                      <TextBlock Grid.Column="0"
+                                                 Text="{Binding Label}"
+                                                 FontSize="11" FontWeight="SemiBold"
+                                                 Foreground="{StaticResource TextPrimaryBrush}"
+                                                 TextTrimming="CharacterEllipsis"/>
+                                      <!-- Phase A4: 4-dot persistence chain.
+                                           queued (in-process queue) →
+                                           EventLog → Greenfield → BSC anchor.
+                                           Each dot lights as the step
+                                           reaches that durable phase.
+                                           Hover shows the audit summary
+                                           (event_id / hash / blob_path /
+                                           tx hash). -->
+                                      <StackPanel Grid.Column="1"
+                                                  Orientation="Horizontal"
+                                                  Spacing="2"
+                                                  VerticalAlignment="Center"
+                                                  Margin="6,0,4,0"
+                                                  ToolTip.Tip="{Binding Persistence.StatusSummary}">
+                                        <Ellipse Width="6" Height="6"
+                                                 Fill="{Binding Persistence.Queued,
+                                                        Converter={x:Static local:DotFillConverter.Queued}}"
+                                                 ToolTip.Tip="In-process queue (just emitted)"/>
+                                        <Ellipse Width="6" Height="6"
+                                                 Fill="{Binding Persistence.EventLogPersisted,
+                                                        Converter={x:Static local:DotFillConverter.EventLog}}"
+                                                 ToolTip.Tip="Server EventLog committed"/>
+                                        <Ellipse Width="6" Height="6"
+                                                 Fill="{Binding Persistence.GreenfieldMirrored,
+                                                        Converter={x:Static local:DotFillConverter.Greenfield}}"
+                                                 ToolTip.Tip="Mirrored to Greenfield (gnfd://)"/>
+                                        <Ellipse Width="6" Height="6"
+                                                 Fill="{Binding Persistence.BscAnchored,
+                                                        Converter={x:Static local:DotFillConverter.BscAnchor}}"
+                                                 ToolTip.Tip="Covered by a BSC state-root anchor (immutable)"/>
+                                      </StackPanel>
+                                      <TextBlock Grid.Column="2"
+                                                 Text="{Binding DurationText}"
+                                                 FontSize="10"
+                                                 Foreground="{StaticResource TextTertiaryBrush}"/>
+                                    </Grid>
+                                    <!-- Reasoning (Gemini chain-of-thought) — italic, indented box -->
+                                    <Border IsVisible="{Binding IsReasoning}"
+                                            BorderThickness="2,0,0,0"
+                                            BorderBrush="#7B5CFF"
+                                            Padding="8,4,8,4"
+                                            CornerRadius="0,4,4,0"
+                                            Background="#1B1B26"
+                                            Margin="0,3,0,0">
+                                      <TextBlock Text="{Binding Content}"
+                                                 FontSize="11"
+                                                 FontStyle="Italic"
+                                                 Foreground="{StaticResource TextPrimaryBrush}"
+                                                 TextWrapping="Wrap"/>
+                                    </Border>
+                                    <!-- Default content row (anything not reasoning) -->
+                                    <TextBlock Text="{Binding Content}"
+                                               FontSize="10"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               TextWrapping="Wrap" MaxLines="3"
+                                               TextTrimming="CharacterEllipsis"
+                                               IsVisible="{Binding !IsReasoning}"/>
+                                  </StackPanel>
+                                </Grid>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- ═════════════════════════════════════════════════
+                   Section 1.5: PRESSURE GAUGES (Phase C3).
+                   Renders one progress bar per evolver, layer-coloured
+                   (L0 gold / L1 green / L2 blue / L4 grey). Driven by
+                   GET /agent/evolution/pressure (refreshed every 5s).
+                   Lets the user see "what's about to evolve" — when
+                   knowledge is 9/10 facts away from compiling, the
+                   gauge fills to 90% and ⏳ pulses.
+                   ═════════════════════════════════════════════════ -->
+              <StackPanel Spacing="6">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Grid.Column="0" Text="EVOLUTION PRESSURE"
+                             FontSize="10" FontWeight="Bold"
+                             Foreground="{StaticResource TextTertiaryBrush}"
+                             ToolTip.Tip="Each evolver's accumulator vs threshold. Layer colours follow the AHE pyramid: gold=persona (slowest), green=memory, blue=skills, grey=audit (fastest)."/>
+                  <TextBlock Grid.Column="1"
+                             Text="{Binding Cognition.Pressure.LastUpdated}"
+                             FontSize="9"
+                             Foreground="{StaticResource TextTertiaryBrush}"/>
+                </Grid>
+                <!-- Empty-state placeholder so a fresh agent (no
+                     pressure data yet) doesn't see a blank section. -->
+                <TextBlock IsVisible="{Binding Cognition.Pressure.IsEmpty}"
+                           Text="(warming up — chat a few turns and evolvers will appear)"
+                           FontSize="11"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           TextWrapping="Wrap"/>
+                <ItemsControl ItemsSource="{Binding Cognition.Pressure.Gauges}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Margin="0,0,0,6" Padding="8,6" CornerRadius="6"
+                              Background="{StaticResource SurfaceCardBrush}"
+                              ToolTip.Tip="{Binding GaugeDetail}">
+                        <StackPanel Spacing="4">
+                          <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Grid.Column="0"
+                                       Text="{Binding DisplayName}"
+                                       FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding FillLabel}"
+                                       FontSize="10"
+                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                          </Grid>
+                          <!-- The gauge itself: a thin bar background
+                               + a progress fill clipped to FillRatio.
+                               Layer colour drives both bar fill and
+                               bottom-line summary. -->
+                          <Border Height="6" CornerRadius="3"
+                                  Background="#22FFFFFF">
+                            <Grid HorizontalAlignment="Stretch">
+                              <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="{Binding FillRatio, StringFormat=\{0:0.000\}*}"/>
+                                <ColumnDefinition Width="*"/>
+                              </Grid.ColumnDefinitions>
+                              <Border Grid.Column="0"
+                                      CornerRadius="3"
+                                      Background="{Binding LayerColor}"/>
+                            </Grid>
+                          </Border>
+                          <TextBlock Text="{Binding FedByLabel}"
+                                     FontSize="9"
+                                     Foreground="{StaticResource TextTertiaryBrush}"
+                                     IsVisible="{Binding FedByLabel,
+                                                 Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- ── 24h frequency histogram (mini-pyramid) ──
+                     One row per evolver, 24 hourly bars. Visualises
+                     the BEP-Nexus AHE pyramid: L0 sparse at top,
+                     L1/L2 busier toward the bottom. -->
+                <TextBlock Text="LAST 24H FREQUENCY"
+                           FontSize="9" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           Margin="0,8,0,0"
+                           IsVisible="{Binding Cognition.Pressure.Histogram.Count}"/>
+                <ItemsControl ItemsSource="{Binding Cognition.Pressure.Histogram}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Grid ColumnDefinitions="120,*,Auto" Margin="0,0,0,3">
+                        <TextBlock Grid.Column="0"
+                                   Text="{Binding Evolver}"
+                                   FontSize="10"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center"/>
+                        <ItemsControl Grid.Column="1"
+                                      ItemsSource="{Binding Bars}"
+                                      Height="20">
+                          <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                              <UniformGrid Columns="24" Rows="1"/>
+                            </ItemsPanelTemplate>
+                          </ItemsControl.ItemsPanel>
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                              <Border Margin="0,0,1,0"
+                                      VerticalAlignment="Bottom"
+                                      Background="{Binding $parent[ItemsControl].DataContext.LayerColor}"
+                                      Height="{Binding Height,
+                                              Converter={x:Static local:HistogramHeightConverter.Instance}}"
+                                      ToolTip.Tip="{Binding Tooltip}"/>
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock Grid.Column="2"
+                                   Text="{Binding TotalIn24h, StringFormat=\{0\}/24h}"
+                                   FontSize="9"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="6,0,0,0"/>
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- ── Recent verdict feed (Phase D 续 / #159) ──
+                     Newest-first list of kept / reverted decisions
+                     so the user sees what the agent's evolution
+                     pipeline has actually concluded. -->
+                <TextBlock Text="RECENT VERDICTS"
+                           FontSize="9" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           Margin="0,8,0,0"
+                           IsVisible="{Binding Cognition.Pressure.Verdicts.Count}"/>
+                <ItemsControl ItemsSource="{Binding Cognition.Pressure.Verdicts}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Margin="0,0,0,4" Padding="8,6" CornerRadius="6"
+                              Background="{StaticResource SurfaceCardBrush}">
+                        <StackPanel Spacing="3">
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Border Grid.Column="0" Padding="5,2" CornerRadius="3"
+                                    Background="{Binding DecisionColor}"
+                                    Margin="0,0,6,0"
+                                    VerticalAlignment="Center">
+                              <TextBlock Text="{Binding DecisionBadge}"
+                                         FontSize="9" FontWeight="Bold"
+                                         Foreground="White"/>
+                            </Border>
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding Evolver}"
+                                       FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding RelativeTime}"
+                                       FontSize="9"
+                                       Foreground="{StaticResource TextTertiaryBrush}"
+                                       VerticalAlignment="Center"/>
+                          </Grid>
+                          <TextBlock Text="{Binding ChangeSummary}"
+                                     FontSize="10"
+                                     Foreground="{StaticResource TextSecondaryBrush}"
+                                     TextWrapping="Wrap"
+                                     MaxLines="2"
+                                     TextTrimming="CharacterEllipsis"
+                                     IsVisible="{Binding ChangeSummary,
+                                                 Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                          <TextBlock Text="{Binding ReasoningLabel}"
+                                     FontSize="9"
+                                     Foreground="{StaticResource TextTertiaryBrush}"
+                                     IsVisible="{Binding ReasoningLabel,
+                                                 Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- ═════════════════════════════════════════════════
+                   Section 2: JUST LEARNED (Phase D 续 / #159 v2)
+                   Replaces "JUST HAPPENED" — sourced from
+                   /api/v1/agent/learning_summary (typed namespaces).
+                   Each row: kind chip + content + 3-dot chain status
+                   + relative time.
+                   ═════════════════════════════════════════════════ -->
+              <StackPanel Spacing="6">
+                <TextBlock Text="JUST LEARNED"
+                           FontSize="10" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           ToolTip.Tip="Newest items learned across the 5 typed namespaces (persona / knowledge / skills / facts / episodes). Each one shows ● local · ● mirrored · ● anchored chain status."/>
+                <TextBlock IsVisible="{Binding Cognition.Brain.IsJustLearnedEmpty}"
+                           Text="(nothing learned yet — chat with the agent and items will start appearing here)"
+                           FontSize="11"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           TextWrapping="Wrap"/>
+                <ItemsControl ItemsSource="{Binding Cognition.Brain.JustLearned}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Margin="0,0,0,5" Padding="8,6" CornerRadius="6"
+                              Background="{StaticResource SurfaceCardBrush}">
+                        <StackPanel Spacing="4">
+                          <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Border Grid.Column="0" Padding="5,2" CornerRadius="3"
+                                    Background="{StaticResource SurfaceMutedBrush}"
+                                    Margin="0,0,6,0"
+                                    VerticalAlignment="Center">
+                              <TextBlock Text="{Binding KindBadge}"
+                                         FontSize="9" FontWeight="Bold"
+                                         Foreground="{StaticResource TextSecondaryBrush}"/>
+                            </Border>
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding Content}"
+                                       FontSize="11"
+                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                       TextWrapping="Wrap" MaxLines="2"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <StackPanel Grid.Column="2" Orientation="Horizontal"
+                                        Spacing="3" Margin="6,0,0,0"
+                                        VerticalAlignment="Center">
+                              <Ellipse Width="6" Height="6"
+                                       Fill="{StaticResource SuccessBrush}"
+                                       IsVisible="{Binding DotLocal}"/>
+                              <Ellipse Width="6" Height="6"
+                                       Fill="{StaticResource SuccessBrush}"
+                                       IsVisible="{Binding DotMirrored}"/>
+                              <Ellipse Width="6" Height="6"
+                                       Stroke="{StaticResource DividerBrush}"
+                                       StrokeThickness="1"
+                                       IsVisible="{Binding !DotMirrored}"/>
+                              <Ellipse Width="6" Height="6"
+                                       Fill="{StaticResource SuccessBrush}"
+                                       IsVisible="{Binding DotAnchored}"/>
+                              <Ellipse Width="6" Height="6"
+                                       Stroke="{StaticResource DividerBrush}"
+                                       StrokeThickness="1"
+                                       IsVisible="{Binding !DotAnchored}"/>
+                            </StackPanel>
+                          </Grid>
+                          <TextBlock Text="{Binding RelativeTime}"
+                                     FontSize="9"
+                                     Foreground="{StaticResource TextTertiaryBrush}"/>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- ═════════════════════════════════════════════════
+                   Section 3: CHAIN HEALTH (Phase D 续 / #159 v2)
+                   Replaces "ANCHORED ON BSC" — surfaces the chain
+                   pipeline state at a glance: WAL queue + daemon
+                   alive + Greenfield/BSC ready + recent anchor list.
+                   Sourced from /api/v1/agent/chain_status.
+                   ═════════════════════════════════════════════════ -->
+              <StackPanel Spacing="6">
+                <TextBlock Text="CHAIN HEALTH"
+                           FontSize="10" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           ToolTip.Tip="Background sync to Greenfield + BSC. Healthy = empty queue + daemon alive + both backends ready."/>
+                <Border Padding="10,8" CornerRadius="8"
+                        Background="{StaticResource SurfaceCardBrush}">
+                  <StackPanel Spacing="6"
+                              DataContext="{Binding Cognition.Brain.Health}">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Grid.Column="0"
+                                 Text="{Binding OverallStatus}"
+                                 FontSize="13" FontWeight="SemiBold"
+                                 Foreground="{StaticResource TextPrimaryBrush}"/>
+                      <TextBlock Grid.Column="1"
+                                 Text="{Binding QueueLabel}"
+                                 FontSize="10"
+                                 Foreground="{StaticResource TextSecondaryBrush}"
+                                 VerticalAlignment="Center"/>
+                    </Grid>
+                    <Grid ColumnDefinitions="*,*,*">
+                      <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="4">
+                        <Ellipse Width="7" Height="7"
+                                 Fill="{StaticResource SuccessBrush}"
+                                 IsVisible="{Binding DaemonAlive}"
+                                 VerticalAlignment="Center"/>
+                        <Ellipse Width="7" Height="7"
+                                 Fill="{StaticResource ErrorBrush}"
+                                 IsVisible="{Binding !DaemonAlive}"
+                                 VerticalAlignment="Center"/>
+                        <TextBlock Text="daemon" FontSize="10"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   VerticalAlignment="Center"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                        <Ellipse Width="7" Height="7"
+                                 Fill="{StaticResource SuccessBrush}"
+                                 IsVisible="{Binding GreenfieldReady}"
+                                 VerticalAlignment="Center"/>
+                        <Ellipse Width="7" Height="7"
+                                 Fill="{StaticResource WarningBrush}"
+                                 IsVisible="{Binding !GreenfieldReady}"
+                                 VerticalAlignment="Center"/>
+                        <TextBlock Text="greenfield" FontSize="10"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   VerticalAlignment="Center"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4">
+                        <Ellipse Width="7" Height="7"
+                                 Fill="{StaticResource SuccessBrush}"
+                                 IsVisible="{Binding BscReady}"
+                                 VerticalAlignment="Center"/>
+                        <Ellipse Width="7" Height="7"
+                                 Fill="{StaticResource WarningBrush}"
+                                 IsVisible="{Binding !BscReady}"
+                                 VerticalAlignment="Center"/>
+                        <TextBlock Text="bsc" FontSize="10"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   VerticalAlignment="Center"/>
+                      </StackPanel>
+                    </Grid>
+                  </StackPanel>
+                </Border>
+
+                <!-- Recent anchors mini-list (top 3) — keeps the
+                     auditable per-anchor detail (state-root hash + tx)
+                     accessible without a slide-over click. -->
+                <TextBlock Text="RECENT ANCHORS"
+                           FontSize="9" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           Margin="0,4,0,0"
+                           IsVisible="{Binding Cognition.OnChain.Count}"/>
+                <ItemsControl ItemsSource="{Binding Cognition.OnChain}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Margin="0,0,0,3" Padding="8,5" CornerRadius="6"
+                              Background="{StaticResource SurfaceCardBrush}">
+                        <Grid ColumnDefinitions="Auto,*,Auto">
+                          <Border Grid.Column="0" Width="6" Height="6"
+                                  CornerRadius="3"
+                                  Background="{Binding StatusColor}"
+                                  Margin="0,0,6,0"
+                                  VerticalAlignment="Center"/>
+                          <TextBlock Grid.Column="1" FontSize="10"
+                                     Foreground="{StaticResource TextSecondaryBrush}">
+                            <Run Text="{Binding ShortHash}"
+                                 FontFamily="Menlo, Consolas, monospace"
+                                 Foreground="{StaticResource TextPrimaryBrush}"/>
+                            <Run Text=" · "/>
+                            <Run Text="{Binding RelativeTime}"
+                                 Foreground="{StaticResource TextTertiaryBrush}"/>
+                          </TextBlock>
+                          <TextBlock Grid.Column="2" FontSize="9"
+                                     IsVisible="{Binding HasBscTx}"
+                                     Foreground="{StaticResource AccentClaudeBrush}"
+                                     FontFamily="Menlo, Consolas, monospace"
+                                     Text="{Binding ShortTx}"
+                                     VerticalAlignment="Center"/>
+                        </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- Section 4: Working directory (Greenfield bucket tree) -->
+              <StackPanel Spacing="6">
+                <TextBlock Text="WORK DIRECTORY"
+                           FontSize="10" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           ToolTip.Tip="Live mirror of the agent's Greenfield bucket — every memory file, artifact version, and session checkpoint."/>
+                <TextBlock Text="{Binding Cognition.WorkdirHeading}"
+                           FontSize="10"
+                           FontFamily="Menlo, Consolas, monospace"
+                           Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock IsVisible="{Binding Cognition.WorkdirEmpty}"
+                           Text="(bucket pending — chain identity bootstrapping)"
+                           FontSize="11"
+                           Foreground="{StaticResource TextTertiaryBrush}"/>
+                <!-- Sync badge legend so the user knows what the
+                     ✅ / ⏳ glyphs mean without hovering. -->
+                <StackPanel Orientation="Horizontal" Spacing="12"
+                            Margin="0,0,0,4">
+                  <StackPanel Orientation="Horizontal" Spacing="4">
+                    <TextBlock Text="✅" FontSize="10"/>
+                    <TextBlock Text="synced"
+                               FontSize="9"
+                               Foreground="{StaticResource TextTertiaryBrush}"
+                               VerticalAlignment="Center"/>
+                  </StackPanel>
+                  <StackPanel Orientation="Horizontal" Spacing="4">
+                    <TextBlock Text="⏳" FontSize="10"/>
+                    <TextBlock Text="pending"
+                               FontSize="9"
+                               Foreground="{StaticResource TextTertiaryBrush}"
+                               VerticalAlignment="Center"/>
+                  </StackPanel>
+                </StackPanel>
+
+                <ItemsControl ItemsSource="{Binding Cognition.Workdir}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <StackPanel>
+                        <!-- Level 0: agent root -->
+                        <StackPanel Orientation="Horizontal" Spacing="6"
+                                    Margin="0,2,0,0">
+                          <TextBlock Text="{Binding Glyph}" FontSize="11"/>
+                          <TextBlock Text="{Binding Name}"
+                                     FontSize="11" FontWeight="SemiBold"
+                                     FontFamily="Menlo, Consolas, monospace"
+                                     Foreground="{StaticResource TextPrimaryBrush}"/>
+                          <TextBlock Text="{Binding SyncBadge}"
+                                     FontSize="11"
+                                     IsVisible="{Binding ShowBadge}"
+                                     ToolTip.Tip="{Binding SyncTooltip}"/>
+                        </StackPanel>
+                        <ItemsControl ItemsSource="{Binding Children}"
+                                      Margin="14,2,0,0"
+                                      IsVisible="{Binding HasChildren}">
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                              <StackPanel>
+                                <!-- Level 1: top-level folders (memory/, artifacts/, sessions/) -->
+                                <StackPanel Orientation="Horizontal" Spacing="6"
+                                            Margin="0,2,0,0">
+                                  <TextBlock Text="{Binding Glyph}" FontSize="10"/>
+                                  <TextBlock Text="{Binding Name}"
+                                             FontSize="10"
+                                             FontFamily="Menlo, Consolas, monospace"
+                                             Foreground="{StaticResource TextPrimaryBrush}"
+                                             TextTrimming="CharacterEllipsis"/>
+                                  <TextBlock Text="{Binding SyncBadge}"
+                                             FontSize="10"
+                                             IsVisible="{Binding ShowBadge}"
+                                             ToolTip.Tip="{Binding SyncTooltip}"/>
+                                </StackPanel>
+                                <ItemsControl ItemsSource="{Binding Children}"
+                                              Margin="14,1,0,0"
+                                              IsVisible="{Binding HasChildren}">
+                                  <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                      <!-- Level 2: leaves (the actual files) — ALWAYS show badge here -->
+                                      <StackPanel Orientation="Horizontal" Spacing="6"
+                                                  Margin="0,1,0,0">
+                                        <TextBlock Text="{Binding Glyph}" FontSize="9"/>
+                                        <TextBlock Text="{Binding Name}"
+                                                   FontSize="9"
+                                                   FontFamily="Menlo, Consolas, monospace"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="{Binding SyncBadge}"
+                                                   FontSize="9"
+                                                   IsVisible="{Binding ShowBadge}"
+                                                   ToolTip.Tip="{Binding SyncTooltip}"/>
+                                      </StackPanel>
+                                    </DataTemplate>
+                                  </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                              </StackPanel>
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                      </StackPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
+        </Grid>
+      </Border>
     </Grid>
 
     <!-- ══════════════════════════════════════════════════════════════
@@ -540,6 +1705,439 @@
                 </ItemsControl.ItemTemplate>
               </ItemsControl>
               </StackPanel>
+
+              <!-- Phase J.9: typed memory namespaces -->
+              <StackPanel IsVisible="{Binding DetailPanel.ShowNamespaces}" Spacing="12">
+                <Border IsVisible="{Binding DetailPanel.NamespacesEmpty}"
+                        Padding="20,28" CornerRadius="12"
+                        Background="{StaticResource SurfaceMutedBrush}"
+                        BorderBrush="{StaticResource DividerBrush}"
+                        BorderThickness="1">
+                  <StackPanel Spacing="10" HorizontalAlignment="Center">
+                    <TextBlock Text="🗂" FontSize="32" HorizontalAlignment="Center"/>
+                    <TextBlock Text="Namespaces are empty"
+                               FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock TextWrapping="Wrap" TextAlignment="Center"
+                               MaxWidth="320" FontSize="12"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               Text="Episodes, Facts, Skills, Persona and Knowledge each live in their own VersionedStore. Chat with the twin to populate them."/>
+                  </StackPanel>
+                </Border>
+
+                <ItemsControl ItemsSource="{Binding DetailPanel.NamespaceCards}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Margin="0,0,0,12" Padding="14,12" CornerRadius="10"
+                              Background="{StaticResource SurfaceMutedBrush}"
+                              BorderBrush="{StaticResource DividerBrush}"
+                              BorderThickness="1">
+                        <StackPanel Spacing="8">
+                          <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Grid.Column="0" Text="{Binding Title}"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}"/>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                              <TextBlock FontSize="11"
+                                         Foreground="{StaticResource TextSecondaryBrush}">
+                                <Run Text="{Binding ItemCount}"/>
+                                <Run Text=" items"/>
+                              </TextBlock>
+                              <TextBlock Text="·" FontSize="11"
+                                         Foreground="{StaticResource TextTertiaryBrush}"/>
+                              <TextBlock FontSize="11"
+                                         Foreground="{StaticResource TextSecondaryBrush}">
+                                <Run Text="{Binding VersionCount}"/>
+                                <Run Text=" versions"/>
+                              </TextBlock>
+                            </StackPanel>
+                          </Grid>
+                          <TextBlock FontSize="10"
+                                     Foreground="{StaticResource TextTertiaryBrush}"
+                                     FontFamily="Menlo, Consolas, monospace">
+                            <Run Text="@ "/>
+                            <Run Text="{Binding CurrentVersionLabel}"/>
+                          </TextBlock>
+                          <ItemsControl ItemsSource="{Binding Items}"
+                                        IsVisible="{Binding HasItems}">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <Border Margin="0,4,0,0" Padding="10,8" CornerRadius="6"
+                                        Background="{StaticResource SurfaceBrush}">
+                                  <StackPanel Spacing="2">
+                                    <TextBlock Text="{Binding Headline}"
+                                               FontSize="12"
+                                               TextTrimming="CharacterEllipsis"
+                                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    <TextBlock Text="{Binding Subline}"
+                                               FontSize="10"
+                                               Foreground="{StaticResource TextTertiaryBrush}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                  </StackPanel>
+                                </Border>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- Phase O.5/O.6: falsifiable evolution timeline -->
+              <StackPanel IsVisible="{Binding DetailPanel.ShowEvolution}" Spacing="12">
+                <Border IsVisible="{Binding DetailPanel.EvolutionEmpty}"
+                        Padding="20,28" CornerRadius="12"
+                        Background="{StaticResource SurfaceMutedBrush}"
+                        BorderBrush="{StaticResource DividerBrush}"
+                        BorderThickness="1">
+                  <StackPanel Spacing="10" HorizontalAlignment="Center">
+                    <TextBlock Text="🧬" FontSize="32" HorizontalAlignment="Center"/>
+                    <TextBlock Text="No evolution events yet"
+                               FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock TextWrapping="Wrap" TextAlignment="Center"
+                               MaxWidth="320" FontSize="12"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               Text="Every persona / memory / skill / knowledge edit is logged as a Proposal, then graded as a Verdict (kept / warning / reverted) once the observation window elapses. Reverts roll the namespace store back."/>
+                  </StackPanel>
+                </Border>
+
+                <UniformGrid Columns="4"
+                             IsVisible="{Binding !DetailPanel.EvolutionEmpty}"
+                             Margin="0,0,0,4">
+                  <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding DetailPanel.EvolutionProposalCount}"
+                               FontSize="18" FontWeight="Bold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="proposed" FontSize="10"
+                               Foreground="{StaticResource TextTertiaryBrush}"
+                               HorizontalAlignment="Center"/>
+                  </StackPanel>
+                  <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding DetailPanel.EvolutionVerdictCount}"
+                               FontSize="18" FontWeight="Bold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="verdicts" FontSize="10"
+                               Foreground="{StaticResource TextTertiaryBrush}"
+                               HorizontalAlignment="Center"/>
+                  </StackPanel>
+                  <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding DetailPanel.EvolutionRevertCount}"
+                               FontSize="18" FontWeight="Bold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="reverted" FontSize="10"
+                               Foreground="{StaticResource TextTertiaryBrush}"
+                               HorizontalAlignment="Center"/>
+                  </StackPanel>
+                  <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding DetailPanel.EvolutionPendingCount}"
+                               FontSize="18" FontWeight="Bold"
+                               Foreground="{StaticResource WarningBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="pending" FontSize="10"
+                               Foreground="{StaticResource TextTertiaryBrush}"
+                               HorizontalAlignment="Center"/>
+                  </StackPanel>
+                </UniformGrid>
+
+                <ItemsControl ItemsSource="{Binding DetailPanel.EvolutionRows}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Margin="0,0,0,8" Padding="12,10" CornerRadius="8"
+                              Background="{StaticResource SurfaceMutedBrush}"
+                              BorderBrush="{StaticResource DividerBrush}"
+                              BorderThickness="1">
+                        <StackPanel Spacing="6">
+                          <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="10" Height="10" CornerRadius="5"
+                                    Background="{Binding AccentColor}"
+                                    VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding DisplayKind}"
+                                       FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Text="·" FontSize="11"
+                                       Foreground="{StaticResource TextTertiaryBrush}"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Evolver}"
+                                       FontSize="11"
+                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Text="→" FontSize="11"
+                                       Foreground="{StaticResource TextTertiaryBrush}"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Target}"
+                                       FontSize="11"
+                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                       VerticalAlignment="Center"/>
+                          </StackPanel>
+                          <TextBlock Text="{Binding Summary}"
+                                     FontSize="12"
+                                     TextWrapping="Wrap"
+                                     Foreground="{StaticResource TextPrimaryBrush}"/>
+                          <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Grid.Column="0"
+                                       Text="{Binding RelativeTime}"
+                                       FontSize="10"
+                                       Foreground="{StaticResource TextTertiaryBrush}"
+                                       VerticalAlignment="Center"/>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
+                                        IsVisible="{Binding CanModerate}">
+                              <Button Content="Approve"
+                                      Classes="ghost" FontSize="11"
+                                      Command="{Binding $parent[ItemsControl].DataContext.ApproveEditCommand}"
+                                      CommandParameter="{Binding EditId}"/>
+                              <Button Content="Revert"
+                                      Classes="ghost" FontSize="11"
+                                      Foreground="{StaticResource ErrorBrush}"
+                                      Command="{Binding $parent[ItemsControl].DataContext.RevertEditCommand}"
+                                      CommandParameter="{Binding EditId}"/>
+                            </StackPanel>
+                          </Grid>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- Progress (planning + activity) -->
+              <StackPanel IsVisible="{Binding DetailPanel.ShowProgress}" Spacing="10">
+                <Border IsVisible="{Binding DetailPanel.ProgressEmpty}"
+                        Padding="20,28" CornerRadius="12"
+                        Background="{StaticResource SurfaceMutedBrush}"
+                        BorderBrush="{StaticResource DividerBrush}"
+                        BorderThickness="1">
+                  <StackPanel Spacing="10" HorizontalAlignment="Center">
+                    <TextBlock Text="📋" FontSize="32" HorizontalAlignment="Center"/>
+                    <TextBlock Text="Nothing scheduled yet"
+                               FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock TextWrapping="Wrap" TextAlignment="Center"
+                               MaxWidth="320" FontSize="12"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               Text="Pending evolution proposals appear here while the verdict window is open. Completed turns and chain anchors stack below."/>
+                  </StackPanel>
+                </Border>
+                <ItemsControl ItemsSource="{Binding DetailPanel.ProgressItems}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Margin="0,0,0,6" Padding="12,10" CornerRadius="8"
+                              Background="{StaticResource SurfaceMutedBrush}"
+                              BorderBrush="{StaticResource DividerBrush}"
+                              BorderThickness="1">
+                        <Grid ColumnDefinitions="Auto,*">
+                          <Border Grid.Column="0" Width="22" Height="22"
+                                  CornerRadius="11" Margin="0,0,10,0"
+                                  Background="{Binding AccentColor}"
+                                  VerticalAlignment="Top">
+                            <TextBlock Text="{Binding StatusGlyph}"
+                                       FontSize="13" FontWeight="Bold"
+                                       Foreground="White"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"/>
+                          </Border>
+                          <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Text="{Binding Title}"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding Subtitle}"
+                                       FontSize="11"
+                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                       TextWrapping="Wrap"
+                                       MaxLines="2"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding RelativeTime}"
+                                       FontSize="10"
+                                       Foreground="{StaticResource TextTertiaryBrush}"/>
+                          </StackPanel>
+                        </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- Work directory (Greenfield bucket tree) -->
+              <StackPanel IsVisible="{Binding DetailPanel.ShowWorkdir}" Spacing="10">
+                <TextBlock Text="{Binding DetailPanel.WorkdirHeading}"
+                           FontSize="11"
+                           FontFamily="Menlo, Consolas, monospace"
+                           Foreground="{StaticResource TextSecondaryBrush}"
+                           IsVisible="{Binding !DetailPanel.WorkdirEmpty}"/>
+                <Border IsVisible="{Binding DetailPanel.WorkdirEmpty}"
+                        Padding="20,28" CornerRadius="12"
+                        Background="{StaticResource SurfaceMutedBrush}"
+                        BorderBrush="{StaticResource DividerBrush}"
+                        BorderThickness="1">
+                  <StackPanel Spacing="10" HorizontalAlignment="Center">
+                    <TextBlock Text="🗂" FontSize="32" HorizontalAlignment="Center"/>
+                    <TextBlock Text="Bucket is empty"
+                               FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock TextWrapping="Wrap" TextAlignment="Center"
+                               MaxWidth="320" FontSize="12"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               Text="When the twin runs in chain mode, every memory entry, persona / skill / knowledge artifact and session checkpoint shows up here."/>
+                  </StackPanel>
+                </Border>
+                <ItemsControl ItemsSource="{Binding DetailPanel.WorkdirRoots}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Margin="0,0,0,8" Padding="10,8" CornerRadius="8"
+                              Background="{StaticResource SurfaceMutedBrush}"
+                              BorderBrush="{StaticResource DividerBrush}"
+                              BorderThickness="1">
+                        <StackPanel>
+                          <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="{Binding Glyph}" FontSize="13"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Name}"
+                                       FontSize="12" FontWeight="SemiBold"
+                                       FontFamily="Menlo, Consolas, monospace"
+                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                       VerticalAlignment="Center"/>
+                          </StackPanel>
+                          <TextBlock Text="{Binding Subtitle}"
+                                     FontSize="10" Margin="22,2,0,0"
+                                     Foreground="{StaticResource TextTertiaryBrush}"
+                                     TextTrimming="CharacterEllipsis"/>
+                          <ItemsControl ItemsSource="{Binding Children}"
+                                        Margin="14,4,0,0"
+                                        IsVisible="{Binding HasChildren}">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <StackPanel>
+                                  <StackPanel Orientation="Horizontal" Spacing="6"
+                                              Margin="0,3,0,0">
+                                    <TextBlock Text="{Binding Glyph}" FontSize="11"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding Name}"
+                                               FontSize="11"
+                                               FontFamily="Menlo, Consolas, monospace"
+                                               Foreground="{StaticResource TextPrimaryBrush}"
+                                               VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"/>
+                                  </StackPanel>
+                                  <TextBlock Text="{Binding Subtitle}"
+                                             FontSize="9" Margin="18,1,0,0"
+                                             Foreground="{StaticResource TextTertiaryBrush}"
+                                             TextTrimming="CharacterEllipsis"
+                                             MaxLines="1"/>
+                                  <!-- 1-level deep nested children (e.g. session_/) -->
+                                  <ItemsControl ItemsSource="{Binding Children}"
+                                                Margin="14,2,0,0"
+                                                IsVisible="{Binding HasChildren}">
+                                    <ItemsControl.ItemTemplate>
+                                      <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Spacing="6"
+                                                    Margin="0,2,0,0">
+                                          <TextBlock Text="{Binding Glyph}" FontSize="10"/>
+                                          <TextBlock Text="{Binding Name}" FontSize="10"
+                                                     FontFamily="Menlo, Consolas, monospace"
+                                                     Foreground="{StaticResource TextSecondaryBrush}"
+                                                     TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                      </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                  </ItemsControl>
+                                </StackPanel>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- Thinking (inner monologue) -->
+              <StackPanel IsVisible="{Binding DetailPanel.ShowThinking}" Spacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <Border Width="6" Height="6" CornerRadius="3"
+                          Background="#7DBC68" VerticalAlignment="Center"
+                          IsVisible="{Binding DetailPanel.ThinkingPolling}"/>
+                  <TextBlock FontSize="10"
+                             Foreground="{StaticResource TextTertiaryBrush}"
+                             VerticalAlignment="Center"
+                             IsVisible="{Binding DetailPanel.ThinkingPolling}"
+                             Text="auto-refreshing every 2s"/>
+                </StackPanel>
+                <Border IsVisible="{Binding DetailPanel.ThinkingEmpty}"
+                        Padding="20,28" CornerRadius="12"
+                        Background="{StaticResource SurfaceMutedBrush}"
+                        BorderBrush="{StaticResource DividerBrush}"
+                        BorderThickness="1">
+                  <StackPanel Spacing="10" HorizontalAlignment="Center">
+                    <TextBlock Text="🧠" FontSize="32" HorizontalAlignment="Center"/>
+                    <TextBlock Text="Quiet mind"
+                               FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock TextWrapping="Wrap" TextAlignment="Center"
+                               MaxWidth="320" FontSize="12"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               Text="No thinking steps recorded yet. Send a message — the agent's contract checks, memory recall, evolution proposals and final reply all show up here as they happen."/>
+                  </StackPanel>
+                </Border>
+                <ItemsControl ItemsSource="{Binding DetailPanel.ThinkingSteps}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Margin="0,0,0,6" Padding="12,10" CornerRadius="8"
+                              Background="{StaticResource SurfaceMutedBrush}"
+                              BorderBrush="{StaticResource DividerBrush}"
+                              BorderThickness="1">
+                        <Grid ColumnDefinitions="Auto,*">
+                          <Border Grid.Column="0" Width="26" Height="26"
+                                  CornerRadius="13" Margin="0,0,10,0"
+                                  Background="{Binding AccentColor}"
+                                  VerticalAlignment="Top">
+                            <TextBlock Text="{Binding Glyph}"
+                                       FontSize="13"
+                                       Foreground="White"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"/>
+                          </Border>
+                          <StackPanel Grid.Column="1" Spacing="3">
+                            <TextBlock Text="{Binding Label}"
+                                       FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding Content}"
+                                       FontSize="11"
+                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                       TextWrapping="Wrap"
+                                       MaxLines="3"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding RelativeTime}"
+                                       FontSize="10"
+                                       Foreground="{StaticResource TextTertiaryBrush}"/>
+                          </StackPanel>
+                        </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- Phase D 续 / #159 v3 — Brain detail slide-over
+                   retired. All sections (Brain at a Glance,
+                   Learning Timeline, Data Flow, Just Learned,
+                   Chain Health) are now in the always-visible
+                   Cognition right column. ShowBrain mode kept
+                   on the enum so any stragglers fall through to
+                   the parent Loading state instead of erroring. -->
 
               <!-- Loading -->
               <TextBlock Text="Loading…" FontSize="12"

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -114,6 +115,29 @@ public record ChatMessageView
 
     [JsonPropertyName("sync_id")]
     public long SyncId { get; init; }
+
+    /// <summary>Phase Q: attachments persisted as structured metadata
+    /// on user_message events. Server returns the original file
+    /// names/mime/size so the desktop can render real chips on
+    /// reload instead of falling back to "📎 paper.pdf" plain text.</summary>
+    [JsonPropertyName("attachments")]
+    public List<HistoryAttachmentInfo> Attachments { get; init; } = [];
+}
+
+/// <summary>Mirror of the server's AttachmentInfo. Lives here as a
+/// minimal record because it's only consumed by ChatMessageView in
+/// history reload — full ChatAttachment carries upload bytes which
+/// we don't ship over the wire on history reads.</summary>
+public record HistoryAttachmentInfo
+{
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("mime")]
+    public string Mime { get; init; } = "application/octet-stream";
+
+    [JsonPropertyName("size_bytes")]
+    public long SizeBytes { get; init; }
 }
 
 /// <summary>
@@ -152,6 +176,73 @@ public record ChatRequest
     /// </summary>
     [JsonPropertyName("attachments")]
     public List<ChatAttachment> Attachments { get; init; } = [];
+
+    /// <summary>
+    /// Multi-session: route this chat turn to a specific server-side
+    /// thread. Null/empty means "twin's current default thread"
+    /// (legacy behaviour, used for the synthetic Default chat that
+    /// holds pre-multi-session messages). When set, the server's
+    /// chat handler tells twin to switch its in-memory thread before
+    /// running the turn so the LLM sees only that thread's history.
+    /// </summary>
+    [JsonPropertyName("session_id")]
+    public string? SessionId { get; init; }
+}
+
+/// <summary>
+/// One row of <c>GET /api/v1/sessions</c>. Models the server's
+/// SessionInfo Pydantic shape from <c>nexus_server/sessions.py</c>.
+/// </summary>
+public record SessionInfo
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; init; }
+
+    [JsonPropertyName("title")]
+    public required string Title { get; init; }
+
+    [JsonPropertyName("created_at")]
+    public string CreatedAt { get; init; } = "";
+
+    [JsonPropertyName("last_message_at")]
+    public string? LastMessageAt { get; init; }
+
+    [JsonPropertyName("message_count")]
+    public int MessageCount { get; init; }
+
+    [JsonPropertyName("archived")]
+    public bool Archived { get; init; }
+
+    /// <summary>True for the synthetic legacy / pre-multi-session
+    /// thread (id == ""). The desktop hides rename/archive controls
+    /// for these.</summary>
+    [JsonPropertyName("is_default")]
+    public bool IsDefault { get; init; }
+}
+
+/// <summary>Wire shape of <c>GET /api/v1/sessions</c>.</summary>
+public record SessionListResponse
+{
+    [JsonPropertyName("sessions")]
+    public List<SessionInfo> Sessions { get; init; } = [];
+}
+
+/// <summary>Wire shape of <c>DELETE /api/v1/sessions/{id}?hard=true</c>.
+/// Lets the desktop surface "deleted N messages, K Greenfield orphans
+/// remain (BSC anchors immutable)" in the confirmation toast.</summary>
+public record DeleteSessionResult
+{
+    [JsonPropertyName("session_id")]
+    public string SessionId { get; init; } = "";
+
+    [JsonPropertyName("hard_deleted")]
+    public bool HardDeleted { get; init; }
+
+    [JsonPropertyName("deleted_event_count")]
+    public int DeletedEventCount { get; init; }
+
+    [JsonPropertyName("bsc_note")]
+    public string BscNote { get; init; } = "";
 }
 
 /// <summary>
@@ -253,7 +344,19 @@ public class ApiClient
     private string? _bearerToken;
 
     private const int MaxRetries = 3;
-    private const int TimeoutSeconds = 30;
+    // Default per-request timeout. Chat is interactive but the
+    // server-side path is genuinely slow on cold starts:
+    //   * twin._initialize loads persona / skills / knowledge / memory
+    //     from Greenfield (3-10s each on cold cache)
+    //   * the LLM completion itself takes 5-30s on busy days
+    //   * RLM-mode chat projection can issue several sub-LLM calls
+    //   * first-turn chain bootstrap (ERC-8004 mint + bucket create)
+    //     adds another 10-30s before the first response can return.
+    // 30s was too tight and produced visible "request canceled" errors
+    // in normal use. 180s is a roomy upper bound for interactive chat;
+    // read endpoints (timeline / memories / namespaces) typically
+    // settle in <5s so the bigger ceiling doesn't slow them down.
+    private const int TimeoutSeconds = 180;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -340,9 +443,24 @@ public class ApiClient
                 name = a.Name,
                 mime = a.Mime,
                 size_bytes = a.SizeBytes,
+                // BUG FIX: file_id was being dropped on the way out, so
+                // the server's resolve_files() returned [] and the
+                // chat handler fell into the inline-content path with
+                // content_text/content_base64 both null. Result: the
+                // distiller saw an empty payload and the LLM replied
+                // "your PDF is empty" no matter how big the file was.
+                // file_id is the canonical reference now (Round 2-B);
+                // the inline fields are only used for legacy callers
+                // that haven't moved to /files/upload yet.
+                file_id = a.FileId,
                 content_text = a.ContentText,
                 content_base64 = a.ContentBase64,
             }).ToList(),
+            // Multi-session: thread the active session id through to
+            // the server so twin routes this turn to the right thread.
+            // Null/empty here = twin's default thread (legacy users).
+            session_id = string.IsNullOrEmpty(chatRequest.SessionId)
+                ? null : chatRequest.SessionId,
         };
 
         var url = $"{_serverUrl}/api/v1/llm/chat";
@@ -394,6 +512,19 @@ public class ApiClient
             throw new InvalidOperationException("Server returned empty profile.");
 
         return profile;
+    }
+
+    /// <summary>Read the current user's server-side profile —
+    /// {user_id, display_name, created_at}. Used by the passkey login
+    /// path to populate the top-bar pill with the real handle (the
+    /// JWT alone doesn't carry it; the server table does). Returns
+    /// null on transient failure so the caller can fall back.</summary>
+    public async Task<UserProfileResponse?> GetUserProfileAsync()
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/user/profile";
+        try { return await GetWithRetryAsync<UserProfileResponse>(url); }
+        catch { return null; }
     }
 
     // ── Chain / Anchor APIs ───────────────────────────────────────────
@@ -501,6 +632,106 @@ public class ApiClient
         catch { return []; }
     }
 
+    /// <summary>Per-path sync state — which Greenfield writes are
+    /// still pending (in the chain backend's WAL). The Workdir tree
+    /// uses this to badge each file as ✅ synced or ⏳ pending.</summary>
+    public async Task<SyncStatusResponse?> GetSyncStatusAsync()
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/sync_status";
+        try { return await GetWithRetryAsync<SyncStatusResponse>(url); }
+        catch { return null; }
+    }
+
+    /// <summary>Phase J.9: typed memory namespaces (episodes / facts /
+    /// skills / persona / knowledge) for the desktop's Memory panel.</summary>
+    public async Task<NamespacesResponse?> GetMemoryNamespacesAsync(
+        bool includeItems = true, int itemsLimit = 50)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/memory/namespaces"
+                  + $"?include_items={includeItems.ToString().ToLowerInvariant()}"
+                  + $"&items_limit={itemsLimit}";
+        try { return await GetWithRetryAsync<NamespacesResponse>(url); }
+        catch { return null; }
+    }
+
+    /// <summary>Agent's inner-monologue / thinking trace — feeds the
+    /// desktop's 🧠 Thinking panel. Pass ``sinceSyncId`` to get only
+    /// new steps since the last poll.</summary>
+    public async Task<ThinkingResponse?> GetThinkingAsync(int limit = 60, long? sinceSyncId = null)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/thinking?limit={limit}";
+        if (sinceSyncId is { } cursor)
+            url += $"&since_sync_id={cursor}";
+        try { return await GetWithRetryAsync<ThinkingResponse>(url); }
+        catch { return null; }
+    }
+
+    /// <summary>Phase O.5: falsifiable-evolution timeline (proposal +
+    /// verdict + revert events) for the desktop's Evolution panel.</summary>
+    public async Task<EvolutionTimelineResponse?> GetEvolutionTimelineAsync(int limit = 100)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/evolution/verdicts?limit={limit}";
+        try { return await GetWithRetryAsync<EvolutionTimelineResponse>(url); }
+        catch { return null; }
+    }
+
+    /// <summary>Phase O.6: user-driven manual revert for one edit.</summary>
+    public async Task<EvolutionDecisionResult?> RevertEvolutionAsync(string editId)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/evolution/{Uri.EscapeDataString(editId)}/revert";
+        try { return await PostWithRetryAsync<EvolutionDecisionResult>(url); }
+        catch { return null; }
+    }
+
+    /// <summary>Phase O.6: user-driven manual approve for one edit.</summary>
+    public async Task<EvolutionDecisionResult?> ApproveEvolutionAsync(string editId)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/evolution/{Uri.EscapeDataString(editId)}/approve";
+        try { return await PostWithRetryAsync<EvolutionDecisionResult>(url); }
+        catch { return null; }
+    }
+
+    /// <summary>Phase C: Pressure Dashboard data source.
+    ///
+    /// Fetches every evolver's current accumulator + 24h histogram so
+    /// the desktop can render the gauges + lineage + frequency
+    /// pyramid views. Polled every 5s by ``CognitionPanelViewModel``
+    /// — slower cadence than the cognition stream because pressure
+    /// changes slowly.</summary>
+    public async Task<EvolutionPressureResponse?> GetEvolutionPressureAsync()
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/evolution/pressure";
+        try { return await GetWithRetryAsync<EvolutionPressureResponse>(url); }
+        catch { return null; }
+    }
+
+    /// <summary>Brain panel: per-namespace mirror+anchor state +
+    /// Chain Health card (Phase D 续 / #159). Polled every ~10s.</summary>
+    public async Task<ChainStatusResponse?> GetChainStatusAsync()
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/chain_status";
+        try { return await GetWithRetryAsync<ChainStatusResponse>(url); }
+        catch { return null; }
+    }
+
+    /// <summary>Brain panel: 7-day timeline + just-learned feed +
+    /// data-flow snapshot. Polled every ~10s (Phase D 续 / #159).</summary>
+    public async Task<LearningSummaryResponse?> GetLearningSummaryAsync(string window = "7d")
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/learning_summary?window={Uri.EscapeDataString(window)}";
+        try { return await GetWithRetryAsync<LearningSummaryResponse>(url); }
+        catch { return null; }
+    }
+
     /// <summary>
     /// Round 2-A: server-authoritative chat history. Replaces the
     /// desktop's old LocalEventLog — every login pulls history from here
@@ -511,18 +742,218 @@ public class ApiClient
     /// loading older history (server's EventLog ``idx``).
     /// </summary>
     public async Task<List<ChatMessageView>> GetMessagesAsync(
-        int limit = 200, long? beforeSyncId = null)
+        int limit = 200, long? beforeSyncId = null, string? sessionId = null)
     {
         EnsureAuthenticated();
         var url = $"{_serverUrl}/api/v1/agent/messages?limit={limit}";
         if (beforeSyncId is { } cursor)
             url += $"&before_sync_id={cursor}";
+        if (sessionId is not null)
+            // Empty string is a meaningful filter (the synthetic
+            // default session — events with empty session_id) so we
+            // append it even when it's "".
+            url += $"&session_id={Uri.EscapeDataString(sessionId)}";
         try
         {
             var resp = await GetWithRetryAsync<MessagesListResponse>(url);
             return resp?.Messages ?? [];
         }
         catch { return []; }
+    }
+
+    // ── Multi-session: list / create / rename / archive ──────────────
+
+    /// <summary>List the current user's chat sessions, newest activity
+    /// first. The synthetic Default chat is appended automatically by
+    /// the server when the user has any pre-multi-session history.</summary>
+    public async Task<List<SessionInfo>> ListSessionsAsync(
+        bool includeArchived = false)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/sessions?include_archived={(includeArchived ? "true" : "false")}";
+        try
+        {
+            var resp = await GetWithRetryAsync<SessionListResponse>(url);
+            return resp?.Sessions ?? [];
+        }
+        catch { return []; }
+    }
+
+    /// <summary>Create a new session. ``title`` is optional — leave it
+    /// null and the server seeds a "New chat" placeholder which the
+    /// auto-title heuristic replaces after the first user message.</summary>
+    public async Task<SessionInfo?> CreateSessionAsync(string? title = null)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/sessions";
+        var body = new { title };
+        try
+        {
+            return await PostWithRetryAsync<SessionInfo>(url, body);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Rename a session. Returns the updated row, or null if
+    /// the session doesn't exist (or belongs to another user).</summary>
+    public async Task<SessionInfo?> RenameSessionAsync(string sessionId, string title)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/sessions/{Uri.EscapeDataString(sessionId)}";
+        var body = new { title };
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Patch, url)
+            {
+                Content = JsonContent.Create(body),
+            };
+            using var resp = await _httpClient.SendAsync(req);
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadFromJsonAsync<SessionInfo>(JsonOptions);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Archive (soft-delete) a session. Twin's event_log
+    /// retains every message — archive only hides the row from the
+    /// sidebar's default list. Returns true when a row was archived.</summary>
+    public async Task<bool> ArchiveSessionAsync(string sessionId)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/sessions/{Uri.EscapeDataString(sessionId)}";
+        try
+        {
+            using var resp = await _httpClient.DeleteAsync(url);
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>Hard-delete a session. Wipes message rows from twin's
+    /// EventLog, drops pending Greenfield writes, removes the
+    /// metadata row. BSC state-root anchors are immutable and stay.
+    /// Returns the server's summary dict on success, or null on
+    /// failure. Reading the result lets the caller surface counts /
+    /// the BSC immutability note in a confirmation toast.</summary>
+    public async Task<DeleteSessionResult?> DeleteSessionHardAsync(string sessionId)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/sessions/{Uri.EscapeDataString(sessionId)}?hard=true";
+        try
+        {
+            using var resp = await _httpClient.DeleteAsync(url);
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadFromJsonAsync<DeleteSessionResult>(JsonOptions);
+        }
+        catch { return null; }
+    }
+
+    // ── Live thinking SSE ────────────────────────────────────────────
+
+    /// <summary>One frame off the live thinking stream. Mirrors the
+    /// shape emitted by the SDK's ThinkingEmitter (one row of
+    /// reasoning telemetry).</summary>
+    public record ThinkingStreamFrame
+    {
+        [JsonPropertyName("turn_id")] public long TurnId { get; init; }
+        [JsonPropertyName("seq")] public long Seq { get; init; }
+        [JsonPropertyName("kind")] public string Kind { get; init; } = "";
+        [JsonPropertyName("label")] public string Label { get; init; } = "";
+        [JsonPropertyName("content")] public string Content { get; init; } = "";
+        [JsonPropertyName("metadata")] public Dictionary<string, object>? Metadata { get; init; }
+        [JsonPropertyName("timestamp")] public double Timestamp { get; init; }
+        [JsonPropertyName("duration_ms")] public long? DurationMs { get; init; }
+        // Phase A1: per-session ids so cognition panel can filter
+        // and render "Turn N of THIS chat" rather than the global
+        // turn counter that keeps climbing across session switches.
+        [JsonPropertyName("session_id")] public string SessionId { get; init; } = "";
+        [JsonPropertyName("session_turn_id")] public long SessionTurnId { get; init; }
+    }
+
+    /// <summary>Open the live thinking SSE stream and yield frames as
+    /// they arrive. Caller passes a <paramref name="ct"/> to stop —
+    /// closing the cancellation token tears the HTTP connection down,
+    /// the server's handler unsubscribes its emitter queue.
+    ///
+    /// Reconnect on transient failure is the caller's responsibility
+    /// (the cognition VM owns the retry loop). Implementation:
+    ///   * raw HttpClient request with HttpCompletionOption.ResponseHeadersRead
+    ///     so we don't buffer the whole stream
+    ///   * line-oriented parse (split on '\n'); a blank line flushes
+    ///     the accumulated ``data:`` lines as one frame
+    ///   * comment frames (lines starting with ':') are silently dropped
+    ///   * ``hello`` / ``error`` kinds pass through to the consumer
+    ///     so it can render a status badge.</summary>
+    public async IAsyncEnumerable<ThinkingStreamFrame> StreamThinkingAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+        System.Threading.CancellationToken ct)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/thinking/stream";
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        req.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("text/event-stream"));
+
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await _httpClient.SendAsync(
+                req, HttpCompletionOption.ResponseHeadersRead, ct);
+        }
+        catch (Exception)
+        {
+            yield break;
+        }
+        using var _ = resp;
+        if (!resp.IsSuccessStatusCode) yield break;
+
+        using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        using var reader = new System.IO.StreamReader(stream);
+
+        var dataBuffer = new System.Text.StringBuilder();
+        while (!ct.IsCancellationRequested)
+        {
+            string? line;
+            try { line = await reader.ReadLineAsync(ct); }
+            catch (OperationCanceledException) { yield break; }
+            catch (System.IO.IOException) { yield break; }
+
+            if (line is null) yield break;
+
+            if (string.IsNullOrEmpty(line))
+            {
+                // Blank line = frame boundary. Try to deserialise the
+                // accumulated data lines as one ThinkingStreamFrame.
+                if (dataBuffer.Length == 0) continue;
+                ThinkingStreamFrame? frame = null;
+                try
+                {
+                    frame = JsonSerializer.Deserialize<ThinkingStreamFrame>(
+                        dataBuffer.ToString(), JsonOptions);
+                }
+                catch (JsonException) { /* malformed — skip */ }
+                dataBuffer.Clear();
+                if (frame is not null) yield return frame;
+                continue;
+            }
+
+            if (line.StartsWith(":"))
+            {
+                // Comment / keepalive — ignore.
+                continue;
+            }
+
+            if (line.StartsWith("data:"))
+            {
+                // SSE allows multi-line ``data:`` blocks; we only emit
+                // one-line JSON server-side, but be defensive and
+                // concatenate just in case.
+                var payload = line.Length > 5 && line[5] == ' '
+                    ? line.Substring(6) : line.Substring(5);
+                if (dataBuffer.Length > 0) dataBuffer.Append('\n');
+                dataBuffer.Append(payload);
+            }
+            // Other field names (event, id, retry) are ignored.
+        }
     }
 
     /// <summary>

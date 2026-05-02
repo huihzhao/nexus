@@ -51,6 +51,21 @@ public partial class ChatViewModel : ObservableObject
     [ObservableProperty] private int _turnCount;
     [ObservableProperty] private string _attachmentError = "";
 
+    /// <summary>
+    /// Top-level visibility of the chat surface's left "activity sidebar"
+    /// (identity card + state counters + Browse/Memories/Anchors/etc.
+    /// + activity stream). Persisted to disk so the user's choice
+    /// survives restart. When true, the 320 px column collapses to
+    /// 0 width — same pattern as <see cref="CognitionPanelViewModel.IsHidden"/>
+    /// for the right column. The user can still get back to memories,
+    /// anchors, namespaces etc. via the slide-over <c>DetailPanel</c>
+    /// which any other surface (top bar, command palette) can open.
+    ///
+    /// Toggle from MainWindow's top-bar button (default keyboard
+    /// shortcut TBD; currently button-only).
+    /// </summary>
+    [ObservableProperty] private bool _isActivityHidden;
+
     // ── Chain / Anchor surface ────────────────────────────────────────
     [ObservableProperty] private string _chainTokenId = "—";
     [ObservableProperty] private string _chainNetwork = "";
@@ -76,6 +91,12 @@ public partial class ChatViewModel : ObservableObject
     /// <summary>Slide-over detail panel (memories / anchors).</summary>
     public DetailPanelViewModel DetailPanel { get; }
 
+    /// <summary>Always-on right column — live thinking + summarized
+    /// data + on-chain anchors + Greenfield bucket tree, refreshing
+    /// every 2s. Communicates the "self-evolving agent" experience
+    /// without requiring the user to open a slide-over.</summary>
+    public CognitionPanelViewModel Cognition { get; }
+
     /// <summary>Empty-state visibility helper for the chat surface.</summary>
     public bool HasNoMessages => Messages.Count == 0;
 
@@ -90,14 +111,98 @@ public partial class ChatViewModel : ObservableObject
     /// </summary>
     public Func<Task<IReadOnlyList<IStorageFile>>>? FilePickerProvider { get; set; }
 
+    /// <summary>Active chat thread id. ``""`` = synthetic Default chat
+    /// (the user's pre-multi-session conversation). Anything else is a
+    /// server-issued ``session_xxxxxxxx`` token returned by
+    /// <see cref="ApiClient.CreateSessionAsync"/>.
+    ///
+    /// Set this BEFORE calling <see cref="LoadHistoryForCurrentSessionAsync"/>
+    /// — it threads through to <see cref="ApiClient.GetMessagesAsync"/>
+    /// (filter by session_id) and into every outgoing chat request so
+    /// twin routes the turn correctly.</summary>
+    [ObservableProperty] private string _currentSessionId = "";
+
     public ChatViewModel(ApiClient api)
     {
         _api = api;
         Activity = new ActivityStreamViewModel(api);
         DetailPanel = new DetailPanelViewModel(api);
+        Cognition = new CognitionPanelViewModel(api);
         Messages.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasNoMessages));
         PendingAttachments.CollectionChanged += (_, _) =>
             OnPropertyChanged(nameof(HasPendingAttachments));
+        try { IsActivityHidden = SessionPrefs.LoadActivityHidden(); }
+        catch { /* missing prefs file → default visible */ }
+    }
+
+    partial void OnIsActivityHiddenChanged(bool value)
+    {
+        try { SessionPrefs.SaveActivityHidden(value); } catch { /* best-effort */ }
+    }
+
+    /// <summary>Top-bar button hook — flips
+    /// <see cref="IsActivityHidden"/> and persists. Mirrors the rail's
+    /// <c>SessionsVm.ToggleHiddenCommand</c> + the cognition column's
+    /// <c>Cognition.ToggleHiddenCommand</c> so the user can collapse
+    /// every chrome panel and end up with just the chat surface.</summary>
+    [RelayCommand]
+    private void ToggleActivityHidden() => IsActivityHidden = !IsActivityHidden;
+
+    /// <summary>Switch the active session. Clears the message list and
+    /// repopulates from the server filtered by the new session_id, so
+    /// the surface only shows that thread's history. Idempotent.</summary>
+    public async Task SwitchSessionAsync(string sessionId)
+    {
+        if (sessionId == CurrentSessionId && _initialized) return;
+        CurrentSessionId = sessionId;
+        Messages.Clear();
+        TurnCount = 0;
+        _initialized = false;
+        // Phase A1: scope cognition's thinking stream to the new
+        // session so the user only sees current-conversation Turns,
+        // not bleed-through from the previous chat thread.
+        Cognition.SetCurrentSession(sessionId);
+        await LoadHistoryForCurrentSessionAsync();
+    }
+
+    /// <summary>Pull just the active session's history. Called by
+    /// <see cref="SwitchSessionAsync"/> and on first init.</summary>
+    private async Task LoadHistoryForCurrentSessionAsync()
+    {
+        try
+        {
+            // session_id="" is a meaningful filter (the synthetic
+            // default thread) — we always pass it. ApiClient escapes
+            // it correctly into the URL.
+            var history = await _api.GetMessagesAsync(
+                limit: 200, sessionId: CurrentSessionId);
+            foreach (var m in history)
+            {
+                // Phase Q: server returns structured attachments per
+                // message; render them as real chips instead of
+                // fallback text in the bubble body.
+                var chips = m.Attachments
+                    .Select(MessageAttachmentViewModel.FromHistory)
+                    .ToList();
+                Messages.Add(new ChatMessageViewModel(
+                    new ChatMessage
+                    {
+                        Role = m.Role == "user"
+                            ? ChatMessageRole.User
+                            : ChatMessageRole.Assistant,
+                        Content = m.Content,
+                        Timestamp = ParseTimestamp(m.Timestamp),
+                    },
+                    chips));
+            }
+            TurnCount = history.Count(m => m.Role == "user");
+            _initialized = true;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"session history load: {ex.Message}");
+            _initialized = true; // Don't block chat even if history fetch hiccups.
+        }
     }
 
     [RelayCommand]
@@ -105,6 +210,28 @@ public partial class ChatViewModel : ObservableObject
 
     [RelayCommand]
     private Task BrowseAnchors() => DetailPanel.OpenAnchorsAsync();
+
+    /// <summary>Phase D 续 / #159: open the Brain panel — learning
+    /// progress + chain status + data flow + just-learned feed.
+    /// (Replaces the old typed-namespace dump.)</summary>
+    [RelayCommand]
+    private Task BrowseNamespaces() => DetailPanel.OpenBrainAsync();
+
+    /// <summary>Phase O.5: open the falsifiable-evolution timeline.</summary>
+    [RelayCommand]
+    private Task BrowseEvolution() => DetailPanel.OpenEvolutionAsync();
+
+    /// <summary>Open the Progress (planning + activity) panel.</summary>
+    [RelayCommand]
+    private Task BrowseProgress() => DetailPanel.OpenProgressAsync();
+
+    /// <summary>Open the Work directory (Greenfield bucket tree) panel.</summary>
+    [RelayCommand]
+    private Task BrowseWorkdir() => DetailPanel.OpenWorkdirAsync();
+
+    /// <summary>Open the agent's inner-monologue / thinking panel.</summary>
+    [RelayCommand]
+    private Task BrowseThinking() => DetailPanel.OpenThinkingAsync();
 
     /// <summary>
     /// Pull chat history from the server and bind it into the message
@@ -120,14 +247,19 @@ public partial class ChatViewModel : ObservableObject
             var history = await _api.GetMessagesAsync(limit: 200);
             foreach (var m in history)
             {
-                Messages.Add(new ChatMessageViewModel(new ChatMessage
-                {
-                    Role = m.Role == "user"
-                        ? ChatMessageRole.User
-                        : ChatMessageRole.Assistant,
-                    Content = m.Content,
-                    Timestamp = ParseTimestamp(m.Timestamp),
-                }));
+                var chips = m.Attachments
+                    .Select(MessageAttachmentViewModel.FromHistory)
+                    .ToList();
+                Messages.Add(new ChatMessageViewModel(
+                    new ChatMessage
+                    {
+                        Role = m.Role == "user"
+                            ? ChatMessageRole.User
+                            : ChatMessageRole.Assistant,
+                        Content = m.Content,
+                        Timestamp = ParseTimestamp(m.Timestamp),
+                    },
+                    chips));
             }
             TurnCount = history.Count(m => m.Role == "user");
             _initialized = true;
@@ -144,6 +276,11 @@ public partial class ChatViewModel : ObservableObject
 
         // Activity stream lives alongside chain status — same lifecycle.
         Activity.Start();
+
+        // Always-on cognition column — start polling thinking +
+        // summarized + on-chain + workdir on login. Survives across
+        // chat sends; only stops on logout / shutdown.
+        Cognition.Start();
     }
 
     private static DateTime ParseTimestamp(string iso)
@@ -296,6 +433,7 @@ public partial class ChatViewModel : ObservableObject
         _pollTimer?.Dispose();
         _pollTimer = null;
         Activity.Stop();
+        Cognition.Stop();
     }
 
     /// <summary>
@@ -360,18 +498,33 @@ public partial class ChatViewModel : ObservableObject
         PendingAttachments.Clear();
         AttachmentError = "";
 
-        var displayText = string.IsNullOrEmpty(text)
-            ? $"📎 Sent {snapshot.Count} file{(snapshot.Count == 1 ? "" : "s")}"
-            : text!;
+        // Build the structured attachment chips for the optimistic UI.
+        // Phase Q: chips are now real ViewModels rendered as a chip
+        // strip in the bubble, NOT prefixed text. The bubble's text
+        // shows just what the user typed.
+        var chipVms = snapshot.Select(MessageAttachmentViewModel.FromPending).ToList();
+        // Optimistic body shown in the bubble. If user typed nothing
+        // but attached files, fall back to a placeholder so the
+        // bubble has visible content beyond the chips.
+        string displayText = text ?? "";
+        if (string.IsNullOrEmpty(displayText) && snapshot.Count > 0)
+        {
+            displayText = ""; // chips alone are visible content
+        }
 
         InputText = "";
         IsTyping = true;
 
         try
         {
-            // Optimistic UI: show the user's message immediately.
-            Messages.Add(new ChatMessageViewModel(ChatMessage.User(displayText)));
+            // Optimistic UI: show the user's bubble with structured
+            // chips above the text body. The server-bound payload
+            // uses BARE text (no chip) — server attaches structured
+            // chip metadata to the persisted user_message event.
+            Messages.Add(new ChatMessageViewModel(
+                ChatMessage.User(displayText), chipVms));
 
+            var serverBoundText = text ?? "";
             // Build the request. Only send the latest user turn — server's
             // twin reconstructs context from its own EventLog, so threading
             // local history through here would just waste tokens (and
@@ -380,10 +533,14 @@ public partial class ChatViewModel : ObservableObject
             // sources of truth pre-refactor).
             var chatRequest = new ChatRequest
             {
-                Messages = new List<ChatMessage> { ChatMessage.User(displayText) },
+                Messages = new List<ChatMessage> { ChatMessage.User(serverBoundText) },
                 SystemPrompt = null,                // server's twin owns persona
                 ToolDefinitions = [],
                 Attachments = snapshot,
+                // Multi-session: pin this turn to the active rail
+                // selection. Empty string is fine — server treats it
+                // as "twin's default thread" (legacy users).
+                SessionId = CurrentSessionId,
             };
 
             var resp = await _api.SendChatAsync(chatRequest);
@@ -424,7 +581,27 @@ public partial class ChatViewModel : ObservableObject
         }
 
         if (files is null || files.Count == 0) return;
+        await ProcessUploadFiles(files);
+    }
 
+    /// <summary>True while files are being dragged over the chat
+    /// surface — drives the "Drop to attach" overlay in ChatView.</summary>
+    [ObservableProperty] private bool _isDraggingOverChat;
+
+    /// <summary>Entry point for the chat surface's drag-and-drop
+    /// handler (see ChatView.axaml.cs). Same upload pipeline as the
+    /// paperclip button; UI just got a different way of feeding files
+    /// into it.</summary>
+    public Task HandleDroppedFilesAsync(IEnumerable<IStorageFile> files)
+        => ProcessUploadFiles(files.ToList());
+
+    /// <summary>Shared file-staging pipeline. Used by both the
+    /// paperclip button and drag-and-drop. Streams bytes to the
+    /// server (no in-memory buffering of 100 MB files), enforces the
+    /// per-request total cap, and accumulates a "Skipped: ..."
+    /// message for any rejected files.</summary>
+    private async Task ProcessUploadFiles(IReadOnlyList<IStorageFile> files)
+    {
         long currentTotal = PendingAttachments.Sum(p => p.SizeBytes);
         var newlyRejected = new List<string>();
 

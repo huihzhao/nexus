@@ -118,6 +118,132 @@ Class rename map:
 Pre-existing class names had no production users, so the rename
 is a clean break — no compatibility aliases.
 
+### Phase I–N — BEP v0.2 design (in flight)
+
+Detailed design lives in [`docs/design/bep-v0.2.md`](docs/design/bep-v0.2.md).
+Summary:
+
+- **I.** Monolith decomposition (`twin.py`, `state.py`,
+  `greenfield.py`, `chain.py`, `twin_manager.py`, `llm_gateway.py`
+  → per-responsibility submodules with re-export shims).
+- **J.** 5-namespace curated memory taxonomy (`facts/`, `episodes/`,
+  `skills/`, `persona/`, `knowledge/`) + persona versioning
+  generalised to all namespaces.
+- **K.** Manifest schema v2 — chunked + Merkle, retention policy.
+- **L.** Multi-writer `AgentStateExtension` v2 (writers set, reader
+  grants, version counter, generation-counter eviction on transfer).
+- **M.** Non-custodial mode Phase P (passkey-derived wallet).
+- **N.** Non-custodial mode Phase A (smart-account / EIP-7702).
+
+### Phase O — Falsifiable Evolution (next)
+
+Detailed design lives in
+[`docs/design/falsifiable-evolution.md`](docs/design/falsifiable-evolution.md).
+
+Make every Nexus self-evolution edit a falsifiable, on-chain
+contract: each `MemoryEvolver` / `SkillEvolver` / `PersonaEvolver` /
+`KnowledgeCompiler` write declares **predicted fixes** and
+**predicted regressions**; the next compaction round verifies, and
+failed predictions auto-rollback. Inspired by the AHE paper
+(*Agentic Harness Engineering*, Lin et al., arXiv:2604.25850v3,
+Apr 2026), which proved this pattern lifts coding-agent pass@1 by
++7.3 pp over 10 iterations.
+
+5 new event types in `nexus.sync.batch.v1` (folded into the same
+schema since v0.2 hasn't shipped yet — no version bump):
+
+| event_type | Purpose |
+| --- | --- |
+| `evolution_proposal` | Self-evolution edit + predicted fixes / regressions |
+| `evolution_verdict` | Post-window evaluation against observed task-level deltas |
+| `evolution_revert` | Storage pointer rollback when verdict fails |
+| `evolution_user_approve` | User manually approves a `kept_with_warning` verdict |
+| `evolution_user_revert` | User manually reverts an edit regardless of verdict |
+
+7 sub-phases (~5 weeks total):
+
+- **O.1** schema + per-namespace versioning (3 days)
+- **O.2** evolver instrumentation — emit `evolution_proposal` (1 wk)
+- **O.3** middleware as first-class file-level component (4 days)
+- **O.4** verdict scorer + auto-rollback + LLM-classified
+  `task_kind` (1 wk)
+- **O.5** coordinator — round-robin priority across evolvers (3 days)
+- **O.6** UI surface — Evolution timeline + manual approve/revert
+  (1 wk)
+- **O.7** external audit hooks — verdict sampling + audit grant tier
+  (3 days)
+
+**Ordering rationale.** Phase O ships *before* Phase M
+(non-custodial). O is server-side and has zero browser-support
+dependency; M waits on Safari 18+ PRF passkey support. More
+importantly, agents created during the M-deferred period still get
+falsifiable evolution from day one — agents created during an
+O-deferred period would have a permanently-unverifiable evolution
+history because the proposal/verdict pairs can't be retrofitted.
+
+Conservative defaults baked in per AHE empirical findings:
+
+- `PersonaEvolver` interval ≥ 30 days (was effectively weekly) —
+  paper measured prose-level edits at −2.3 pp.
+- Coordinator caps at 1 evolver writing per compaction round —
+  paper measured stacking edits as sub-additive.
+- Verdict scorer **only reverts on observed regressions**, never on
+  predicted-but-unobserved ones — paper measured regression
+  prediction precision indistinguishable from random (11.8% vs
+  random 5.6%).
+
+### Phase P — Recursive Projection (RLM-style chat context)
+
+Detailed design lives in
+[`docs/design/recursive-projection.md`](docs/design/recursive-projection.md).
+
+Replace the single-call ``π(events, task, budget)`` chat
+projection with a Recursive Language Model: load the EventLog as a
+REPL variable, let the root LLM write code to slice / sub-LM-call
+/ stitch. Inspired by Zhang, Kraska & Khattab,
+*Recursive Language Models* (arXiv:2512.24601, Dec 2025), which
+proved this pattern handles inputs ~2 orders of magnitude beyond
+the base model's context window at the same or lower cost per
+query.
+
+The RLM **primitive itself is already shipped** as
+``nexus_core.rlm`` (350 LOC + 22 conformance tests) in the
+current branch. Phase P is about **integrating** it into Nexus
+runtime consumers.
+
+**Critical design decision: split DPM.**
+
+| Path | Today | Phase P |
+| --- | --- | --- |
+| Chat projection | single-call ``π``, lossy compactor summary | RLM, runtime navigation, no compactor tax |
+| Chain anchor | single-call ``π`` (same as chat) | **unchanged** — still the deterministic chunked manifest from BEP v0.2 §3 |
+
+Chat answers and chain anchors describe the same EventLog
+differently — and that's fine. Chain anchor stays deterministic
+(stochastic RLM trajectories don't hash). Chat quality goes up
+without dragging audit-ability down.
+
+Sub-phases (~3 weeks total):
+
+- **P.1** ``DigitalTwin.project_for_chat()`` using ``RLMRunner``;
+  feature-flagged side-by-side dogfooding (1 wk)
+- **P.2** Phase O.4 verdict scorer built on ``RLMRunner`` for long
+  observation windows (3 days, after Phase O.4)
+- **P.3** Attachment-by-reference — drop upfront distillation,
+  use RLM at chat time (1 wk, deferrable, gated on cost analysis)
+- **P.4** Operator monitoring — RLM iterations / sub-calls /
+  truncated runs metrics + alerts (3 days)
+
+**Risks** (all with mitigations in design doc): cost variance
+from long-tail runs (capped via ``RLMConfig`` budgets + per-day
+ceiling); quality regression on short queries (fast-path: skip
+RLM if EventLog < threshold); sub-LM hallucination (caught by
+ABC contract on final output).
+
+**Ordering.** P.1 can run in parallel with Phase O.1–O.3 (no
+contention). P.2 depends on Phase O.4 landing. P.3 + P.4 are
+post-mainnet polish.
+
 ## Later
 
 ### Planning support — the missing capability

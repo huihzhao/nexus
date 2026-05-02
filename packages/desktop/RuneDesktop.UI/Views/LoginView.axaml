@@ -20,11 +20,11 @@
                   HorizontalAlignment="Center"
                   Background="{StaticResource BrandAccentBrush}"
                   BoxShadow="0 6 18 0 #29F0B90B">
-            <TextBlock Text="R" FontSize="36" FontWeight="Bold"
+            <TextBlock Text="N" FontSize="36" FontWeight="Bold"
                        Foreground="{StaticResource TextOnAccentBrush}"
                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
-          <TextBlock Text="Rune Protocol"
+          <TextBlock Text="Nexus"
                      FontSize="22" FontWeight="SemiBold"
                      Foreground="{StaticResource TextPrimaryBrush}"
                      HorizontalAlignment="Center"/>

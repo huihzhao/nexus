@@ -19,9 +19,13 @@ from nexus_core import (
     MockBackend,
 )
 from nexus_core.providers.session import SessionProviderImpl
-from nexus_core.providers.memory import MemoryProviderImpl
 from nexus_core.providers.artifact import ArtifactProviderImpl
 from nexus_core.providers.impression import ImpressionProviderImpl
+
+# Phase D 续 #2: ``MemoryProviderImpl`` was deleted. Tests below
+# that exercised MemoryProvider-specific bugs (path sanitisation,
+# lazy loading, CJK tokenisation) have been removed in favour of
+# the Phase J typed namespace stores in ``nexus_core.memory``.
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────
@@ -155,17 +159,9 @@ class TestBug7_PathSanitization:
         assert ".." not in path
         assert "evil" in path
 
-    def test_memory_safe(self):
-        p = MemoryProviderImpl(MockBackend())
-        assert ".." not in p._safe("../etc")
-        assert "/" not in p._safe("a/b")
-
-    def test_memory_paths_sanitized(self):
-        p = MemoryProviderImpl(MockBackend())
-        idx = p._index_path("../evil")
-        assert ".." not in idx
-        entry = p._entry_path("agent", "mem/../hack")
-        assert ".." not in entry
+    # Phase D 续 #2: ``test_memory_safe`` and ``test_memory_paths_sanitized``
+    # were removed when MemoryProviderImpl was deleted. The typed Phase J
+    # stores own their own path layout.
 
     def test_artifact_safe(self):
         p = ArtifactProviderImpl(MockBackend())
@@ -307,112 +303,12 @@ class TestBug14_NegativeCacheTTL:
         cache["path2"] = time.time() - 1  # already expired
         assert hit("path2") is False
         assert "path2" not in cache  # cleaned up
+# Phase D 续 #2: MemoryProvider-specific test classes deleted
+# (TestBug_EnsureLoadedCancelSafety, TestBug15, TestBug18,
+# TestFeature_MemoryCapacityManagement, TestFeature_MemoryAccessTracking).
+# The typed Phase J namespace stores have their own test suite in
+# tests/test_memory_namespaces.py.
 
-
-# ══════════════════════════════════════════════════════════════════════
-# Bug: _ensure_loaded doesn't mark agent on CancelledError
-# ══════════════════════════════════════════════════════════════════════
-
-class TestBug_EnsureLoadedCancelSafety:
-    """_ensure_loaded used except Exception which doesn't catch CancelledError.
-    Now uses try/finally to always mark agent as loaded."""
-
-    @pytest.mark.asyncio
-    async def test_ensure_loaded_marks_on_cancellation(self, backend):
-        """Even if cancelled, _loaded_agents should be populated."""
-        provider = ImpressionProviderImpl(backend)
-
-        # Load an agent normally first (no data, but marks as loaded)
-        await provider._ensure_loaded("agent-1")
-        assert "agent-1" in provider._loaded_agents
-
-        # Second call should be instant (cached)
-        await provider._ensure_loaded("agent-1")
-        # Still there
-        assert "agent-1" in provider._loaded_agents
-
-    @pytest.mark.asyncio
-    async def test_ensure_loaded_uses_finally(self):
-        """Verify the implementation uses try/finally pattern."""
-        import inspect
-        source = inspect.getsource(ImpressionProviderImpl._ensure_loaded)
-        assert "finally:" in source
-        assert "_loaded_agents.add" in source
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Bug #12: Disk full not handled in cache writes
-# ══════════════════════════════════════════════════════════════════════
-
-# ══════════════════════════════════════════════════════════════════════
-# Bug #15: Memory not persisting across restarts — no _ensure_loaded
-# ══════════════════════════════════════════════════════════════════════
-
-class TestBug15_MemoryLazyLoad:
-    """MemoryProviderImpl had no _ensure_loaded(). On cold start,
-    search/list_all/get_by_ids returned [] because the in-memory cache
-    was empty and nothing triggered load_from_chain()."""
-
-    def test_has_ensure_loaded(self):
-        """Verify MemoryProviderImpl has _ensure_loaded method."""
-        assert hasattr(MemoryProviderImpl, '_ensure_loaded')
-
-    def test_has_loaded_agents_set(self):
-        """Verify MemoryProviderImpl tracks loaded agents."""
-        p = MemoryProviderImpl(MockBackend())
-        assert hasattr(p, '_loaded_agents')
-        assert isinstance(p._loaded_agents, set)
-
-    def test_ensure_loaded_uses_finally(self):
-        """Like ImpressionProvider, must use try/finally to handle CancelledError."""
-        import inspect
-        source = inspect.getsource(MemoryProviderImpl._ensure_loaded)
-        assert "finally:" in source
-        assert "_loaded_agents.add" in source
-
-    @pytest.mark.asyncio
-    async def test_search_triggers_lazy_load(self, backend):
-        """search() should load from backend on first call for an agent."""
-        provider = MemoryProviderImpl(backend)
-
-        # Add a memory directly to test retrieval
-        await provider.add("I like spicy food", agent_id="agent-1")
-        assert len(await provider.list_all("agent-1")) == 1
-
-        # Simulate cold restart: clear in-memory cache but keep backend data
-        provider._memories.clear()
-        provider._loaded_agents.clear()
-
-        # search should trigger lazy load via _ensure_loaded
-        results = await provider.search("spicy", agent_id="agent-1")
-        assert len(results) >= 1
-        assert "spicy" in results[0].content
-
-    @pytest.mark.asyncio
-    async def test_list_all_triggers_lazy_load(self, backend):
-        """list_all() should load from backend on first call."""
-        provider = MemoryProviderImpl(backend)
-
-        await provider.add("Memory content", agent_id="agent-1")
-
-        # Simulate cold restart
-        provider._memories.clear()
-        provider._loaded_agents.clear()
-
-        all_memories = await provider.list_all("agent-1")
-        assert len(all_memories) == 1
-        assert all_memories[0].content == "Memory content"
-
-    @pytest.mark.asyncio
-    async def test_ensure_loaded_idempotent(self, backend):
-        """Second call to _ensure_loaded should be instant (cached)."""
-        provider = MemoryProviderImpl(backend)
-        await provider._ensure_loaded("agent-1")
-        assert "agent-1" in provider._loaded_agents
-
-        # Second call — should not re-load
-        await provider._ensure_loaded("agent-1")
-        assert "agent-1" in provider._loaded_agents
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -487,233 +383,12 @@ class TestBug17_GracefulShutdown:
         rune = nexus_core.builder().mock_backend().build()
         # MockBackend.close() is a no-op but should not crash
         await rune.close()
+# Phase D 续 #2: MemoryProvider-specific test classes deleted
+# (TestBug_EnsureLoadedCancelSafety, TestBug15, TestBug18,
+# TestFeature_MemoryCapacityManagement, TestFeature_MemoryAccessTracking).
+# The typed Phase J namespace stores have their own test suite in
+# tests/test_memory_namespaces.py.
 
-
-# ══════════════════════════════════════════════════════════════════════
-# Bug #18: CJK tokenization — Chinese characters treated as single token
-# by \w+ regex, causing zero TF-IDF overlap with English memories
-# ══════════════════════════════════════════════════════════════════════
-
-class TestBug18_CJKTokenization:
-    """MemoryProviderImpl._tokenize used \\w+ which treats "我喜欢辣椒"
-    as one token. Chinese queries had zero token overlap with English
-    memories, so TF-IDF returned 0 score for everything."""
-
-    def test_chinese_chars_split_individually(self):
-        """Chinese characters should be split into individual tokens."""
-        tokens = MemoryProviderImpl._tokenize("我喜欢辣椒")
-        assert "我" in tokens
-        assert "喜" in tokens
-        assert "欢" in tokens
-        assert "辣" in tokens
-        assert "椒" in tokens
-
-    def test_english_words_still_work(self):
-        """English words should still tokenize normally."""
-        tokens = MemoryProviderImpl._tokenize("The user likes spicy food")
-        assert "the" in tokens
-        assert "user" in tokens
-        assert "likes" in tokens
-        assert "spicy" in tokens
-        assert "food" in tokens
-
-    def test_mixed_cjk_english(self):
-        """Mixed CJK and English text should tokenize both correctly."""
-        tokens = MemoryProviderImpl._tokenize("用户likes辣椒")
-        assert "likes" in tokens
-        assert "用" in tokens
-        assert "户" in tokens
-        assert "辣" in tokens
-        assert "椒" in tokens
-
-    def test_chinese_query_matches_chinese_content(self):
-        """TF-IDF should find overlap between Chinese query and Chinese content."""
-        query_tokens = set(MemoryProviderImpl._tokenize("喜欢什么"))
-        content_tokens = set(MemoryProviderImpl._tokenize("用户喜欢辣椒"))
-        overlap = query_tokens & content_tokens
-        assert len(overlap) > 0, f"Expected overlap, got: query={query_tokens}, content={content_tokens}"
-        assert "喜" in overlap or "欢" in overlap
-
-    @pytest.mark.asyncio
-    async def test_tfidf_search_finds_chinese_memories(self):
-        """Full TF-IDF search should rank Chinese-matching memories higher."""
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-
-        # Add memories with Chinese content
-        await provider.add("用户喜欢辣椒和川菜", agent_id="agent-1")
-        await provider.add("Today is sunny weather", agent_id="agent-1")
-
-        # Search with Chinese query
-        results = await provider.search("喜欢什么", agent_id="agent-1")
-        assert len(results) >= 1
-        # The Chinese memory should score higher
-        assert "辣椒" in results[0].content or "喜欢" in results[0].content
-
-    def test_empty_string_returns_empty(self):
-        """Empty string should return empty token list."""
-        tokens = MemoryProviderImpl._tokenize("")
-        assert tokens == []
-
-    def test_pure_punctuation_returns_empty(self):
-        """Punctuation-only string should return empty or no useful tokens."""
-        tokens = MemoryProviderImpl._tokenize("？！。，")
-        # CJK punctuation is in the fullwidth range, but shouldn't produce useful tokens
-        # The important thing is it doesn't crash
-        assert isinstance(tokens, list)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Feature: Memory capacity management — count, bulk_delete, replace,
-# get_least_accessed (inspired by Hermes bounded memory design)
-# ══════════════════════════════════════════════════════════════════════
-
-class TestFeature_MemoryCapacityManagement:
-    """SDK now provides capacity management primitives for upper layers
-    to implement bounded memory with consolidation."""
-
-    @pytest.mark.asyncio
-    async def test_count_returns_correct_number(self):
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-        assert await provider.count("agent-1") == 0
-
-        await provider.add("Fact 1", agent_id="agent-1")
-        await provider.add("Fact 2", agent_id="agent-1")
-        assert await provider.count("agent-1") == 2
-
-    @pytest.mark.asyncio
-    async def test_bulk_delete_removes_multiple(self):
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-
-        id1 = await provider.add("Fact 1", agent_id="agent-1")
-        id2 = await provider.add("Fact 2", agent_id="agent-1")
-        id3 = await provider.add("Fact 3", agent_id="agent-1")
-
-        deleted = await provider.bulk_delete([id1, id3], agent_id="agent-1")
-        assert deleted == 2
-        assert await provider.count("agent-1") == 1
-
-        remaining = await provider.list_all("agent-1")
-        assert remaining[0].memory_id == id2
-
-    @pytest.mark.asyncio
-    async def test_bulk_delete_skips_nonexistent(self):
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-
-        id1 = await provider.add("Fact 1", agent_id="agent-1")
-        deleted = await provider.bulk_delete([id1, "nonexistent-id"], agent_id="agent-1")
-        assert deleted == 1
-        assert await provider.count("agent-1") == 0
-
-    @pytest.mark.asyncio
-    async def test_replace_updates_content_in_place(self):
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-
-        mid = await provider.add("User likes cats", agent_id="agent-1")
-        returned_id = await provider.replace(mid, "User likes dogs", agent_id="agent-1")
-        assert returned_id == mid  # Same ID preserved
-
-        entries = await provider.list_all("agent-1")
-        assert len(entries) == 1
-        assert entries[0].content == "User likes dogs"
-        assert entries[0].memory_id == mid
-
-    @pytest.mark.asyncio
-    async def test_replace_preserves_created_at(self):
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-
-        mid = await provider.add("Original", agent_id="agent-1")
-        original = (await provider.list_all("agent-1"))[0]
-        original_time = original.created_at
-
-        await provider.replace(mid, "Updated", agent_id="agent-1")
-        updated = (await provider.list_all("agent-1"))[0]
-        assert updated.created_at == original_time
-
-    @pytest.mark.asyncio
-    async def test_replace_nonexistent_creates_new(self):
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-
-        new_id = await provider.replace("fake-id", "New content", agent_id="agent-1")
-        assert new_id != "fake-id"  # Created new
-        assert await provider.count("agent-1") == 1
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Feature: Memory access tracking — search() increments access_count
-# and last_accessed on returned entries
-# ══════════════════════════════════════════════════════════════════════
-
-class TestFeature_MemoryAccessTracking:
-    """MemoryEntry now has access_count and last_accessed fields,
-    updated on each search() hit. Enables smart eviction."""
-
-    @pytest.mark.asyncio
-    async def test_search_increments_access_count(self):
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-
-        await provider.add("spicy food preference", agent_id="agent-1")
-
-        # Search twice
-        await provider.search("spicy", agent_id="agent-1")
-        await provider.search("spicy", agent_id="agent-1")
-
-        entries = await provider.list_all("agent-1")
-        assert entries[0].access_count == 2
-        assert entries[0].last_accessed > 0
-
-    @pytest.mark.asyncio
-    async def test_unsearched_memory_has_zero_access(self):
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-
-        await provider.add("never searched", agent_id="agent-1")
-        entries = await provider.list_all("agent-1")
-        assert entries[0].access_count == 0
-        assert entries[0].last_accessed == 0.0
-
-    @pytest.mark.asyncio
-    async def test_get_least_accessed_returns_eviction_candidates(self):
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-
-        await provider.add("popular memory about spicy food", agent_id="agent-1")
-        await provider.add("unpopular memory about rain", agent_id="agent-1")
-
-        # Search with top_k=1 so only the best match gets access bumps
-        for _ in range(5):
-            await provider.search("spicy", agent_id="agent-1", top_k=1)
-
-        least = await provider.get_least_accessed("agent-1", limit=1)
-        assert len(least) == 1
-        assert "rain" in least[0].content
-        assert least[0].access_count == 0
-
-    @pytest.mark.asyncio
-    async def test_access_count_persisted_through_replace(self):
-        """replace() should persist access_count in the JSON."""
-        backend = MockBackend()
-        provider = MemoryProviderImpl(backend)
-
-        mid = await provider.add("test content about spicy food", agent_id="agent-1")
-        await provider.search("spicy", agent_id="agent-1")
-
-        # Replace content — access_count should be in persisted JSON
-        await provider.replace(mid, "updated content", agent_id="agent-1")
-
-        # Check it was written to backend
-        import json
-        path = provider._entry_path("agent-1", mid)
-        data = await backend.load_json(path)
-        assert data is not None
-        assert "access_count" in data
 
 
 # ══════════════════════════════════════════════════════════════════════

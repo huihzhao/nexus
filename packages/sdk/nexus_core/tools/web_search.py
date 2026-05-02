@@ -36,9 +36,24 @@ class WebSearchTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Search the web for current information. Use this when you need "
-            "up-to-date facts, news, prices, events, or any information that "
-            "may not be in your training data. Returns titles, snippets, and URLs."
+            "Search the web for current information — articles, news, "
+            "general facts, blog posts. Returns titles, snippets, and URLs.\n"
+            "\n"
+            "DO NOT use as a first resort for STRUCTURED LIVE DATA. "
+            "Specifically, do NOT use web_search for:\n"
+            "  * Blockchain data (block height, balance, tx receipt) — use "
+            "    bsc_query for BSC, or manage_mcp(search='<chain>') to "
+            "    install an RPC server for any other chain.\n"
+            "  * SaaS data (Slack messages, Notion pages, Postgres rows) — "
+            "    use manage_mcp(search='<service>') to install an integration.\n"
+            "  * Real-time prices / balances / inventory — use the matching "
+            "    MCP server, not scraped search snippets.\n"
+            "\n"
+            "Search engines hallucinate context (e.g. confuse Bitcoin's "
+            "block height for BSC's, return stale prices), so structured "
+            "queries belong on dedicated tools. Use web_search ONLY when "
+            "the answer is genuinely a free-form web document and no "
+            "matching MCP / skill exists."
         )
 
     @property

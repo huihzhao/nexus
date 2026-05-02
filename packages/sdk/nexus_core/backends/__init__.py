@@ -1,5 +1,5 @@
 """
-Rune Protocol — Storage Backends (Strategy implementations).
+Nexus — Storage Backends (Strategy implementations).
 
     LocalBackend  — file-based, zero configuration
     ChainBackend  — BSC + Greenfield, production

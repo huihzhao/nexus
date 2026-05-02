@@ -77,8 +77,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from nexus_server import (
-    agent_state, auth, chain_proxy, llm_gateway,
-    user_profile,
+    agent_state, auth, chain_proxy, files, llm_gateway,
+    sessions_router, thinking_stream, user_profile,
 )
 # Phase C: passkey_page moved into the ``auth`` domain package.
 from nexus_server.auth import passkey_page
@@ -122,7 +122,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     import os as _os
 
     # Startup
-    logger.info("Starting Rune Protocol API Server")
+    logger.info("Starting Nexus API Server")
     config.validate()
     init_db()
 
@@ -157,7 +157,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
     finally:
         # Shutdown
-        logger.info("Shutting down Rune Protocol API Server")
+        logger.info("Shutting down Nexus API Server")
         if daemon_task is not None and stop_event is not None:
             stop_event.set()
             try:
@@ -245,7 +245,7 @@ def create_app() -> FastAPI:
         Configured FastAPI application instance
     """
     app = FastAPI(
-        title="Rune Protocol API",
+        title="Nexus API",
         description=(
             "Modular FastAPI server: LLM Gateway, Auth Provider, "
             "Data Sync Hub, and Chain Proxy"
@@ -296,10 +296,25 @@ def create_app() -> FastAPI:
     app.include_router(chain_proxy.router)
     app.include_router(user_profile.router)
     app.include_router(agent_state.router)
+    # /api/v1/files/upload — desktop streams attachments here so the
+    # next /llm/chat call can reference them by file_id without
+    # re-uploading bytes. Round 2-B feature; the router was somehow
+    # never wired into the app on the rename, which is why uploads
+    # have been 404'ing in the desktop ("Skipped: file.pdf 404").
+    app.include_router(files.router)
     # Phase B: legacy /api/v1/sync/anchors read endpoint moved out of
     # the deleted sync_hub into agent_state.sync_router. Same path,
     # different module.
     app.include_router(agent_state.sync_router)
+    # Multi-session support: list / create / rename / archive chat threads.
+    # Lives at /api/v1/sessions; the desktop sidebar lists these so users
+    # can hold multiple parallel conversations with the same agent.
+    app.include_router(sessions_router.router)
+    # Live agent thinking stream (Server-Sent Events). The desktop's
+    # cognition panel opens a long-lived connection and renders typed
+    # reasoning steps (memory recall, tool calls, Gemini thinking
+    # tokens, evolution proposals) as the agent runs each chat turn.
+    app.include_router(thinking_stream.router)
 
     return app
 
@@ -315,7 +330,7 @@ def run_server() -> None:
     Parses command-line arguments and starts uvicorn server.
     """
     parser = argparse.ArgumentParser(
-        description="Rune Protocol API Server"
+        description="Nexus API Server"
     )
     parser.add_argument(
         "--port",
@@ -338,7 +353,7 @@ def run_server() -> None:
     args = parser.parse_args()
 
     logger.info(
-        f"Starting Rune Protocol API Server on {args.host}:{args.port}"
+        f"Starting Nexus API Server on {args.host}:{args.port}"
     )
 
     import uvicorn
@@ -358,7 +373,7 @@ if __name__ == "__main__":
     app = create_app()
 
     parser = argparse.ArgumentParser(
-        description="Rune Protocol API Server"
+        description="Nexus API Server"
     )
     parser.add_argument(
         "--port",
@@ -381,7 +396,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     logger.info(
-        f"Starting Rune Protocol API Server on {args.host}:{args.port}"
+        f"Starting Nexus API Server on {args.host}:{args.port}"
     )
 
     uvicorn.run(

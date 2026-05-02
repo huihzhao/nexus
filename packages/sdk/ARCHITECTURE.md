@@ -1,4 +1,4 @@
-# Rune Protocol SDK — Architecture
+# Nexus SDK — Architecture
 
 ## Project Structure
 
@@ -20,7 +20,7 @@ bnbchain_agent/
   skills/             # Skill management
     manager.py        #   Install from GitHub, LobeHub Skills, LobeHub MCP
   core/               # Abstract interfaces
-    providers.py      #   StorageBackend, RuneProvider ABCs
+    providers.py      #   StorageBackend + 5-provider AgentRuntime ABCs
     models.py         #   Checkpoint, MemoryEntry, Artifact, Social models
     backend.py        #   StorageBackend base class
     flush.py          #   FlushPolicy, WriteAheadLog
@@ -47,11 +47,11 @@ bnbchain_agent/
     json_parse.py     #   robust_json_parse (LLM output repair)
     dotenv.py         #   .env file loader
     agent_id.py       #   Agent ID to uint256 conversion
-  builder.py          # Rune.builder() entry point
+  builder.py          # local() / testnet() / mainnet() / builder() entry points
   state.py            # StateManager
-  chain.py            # RuneChainClient (BSC contracts)
+  chain.py            # BSCClient (BSC contracts)
   greenfield.py       # GreenfieldClient (storage + persistent daemon)
-  keystore.py         # RuneKeystore (encrypted wallet)
+  keystore.py         # Keystore (encrypted wallet)
 ```
 
 ## Layered Architecture
@@ -127,7 +127,7 @@ nexus-agent-{erc8004_token_id}/                 ← Bucket per ERC-8004 NFT
 ```
 
 This is the canonical layout for any SDK consumer that has an
-ERC-8004 token id — Rune Server, Nexus production deployments,
+ERC-8004 token id — Nexus Server, Nexus production deployments,
 multi-tenant SaaS. Use the helper:
 
 ```python

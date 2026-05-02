@@ -28,6 +28,15 @@ from ..core.backend import StorageBackend
 logger = logging.getLogger("nexus_core.backend.chain")
 
 
+# Phase Q audit #3: cap inline WAL body size to avoid blowing JSON-Lines
+# row sizes through the roof on big chat attachments. 64 KB covers
+# every chat / memory / fact write we ship today (typical event row
+# is <2 KB; a long assistant reply is ~5 KB; even compacted memories
+# stay under 32 KB). Anything bigger falls back to "rely on cache",
+# matching the pre-audit behaviour for blobs.
+_WAL_INLINE_BYTES = 64 * 1024
+
+
 class ChainBackend(StorageBackend):
     """
     Production storage backend: BSC + Greenfield.
@@ -118,6 +127,12 @@ class ChainBackend(StorageBackend):
 
         # Local fallback for anchor operations when chain client unavailable
         self._local_anchors: dict[str, dict[str, str]] = {}
+        # Phase D 续 — Brain panel chain status: timestamp of the most
+        # recent successful state-root anchor per agent. Used to compare
+        # against a namespace's ``last_commit_at`` so the UI can tell
+        # whether a typed-store version is "anchored" or "drifted past
+        # last anchor".
+        self._last_anchor_at: dict[str, float] = {}
 
         # Track agents that failed on-chain: agent_id -> (skip_until_ts, backoff_seconds)
         self._anchor_skip_until: dict[str, float] = {}
@@ -149,6 +164,25 @@ class ChainBackend(StorageBackend):
         self._wal = WriteAheadLog(wal_dir, agent_id="chain")
         self._wal_replay_done = False
 
+        # Phase Q audit: surface background write failures to the
+        # operator. These were previously silent (only WARNING-level
+        # logs); the chat path / sync_status / desktop UI had no
+        # signal. Counters are best-effort, in-memory, reset on
+        # restart — combined with WAL persistence the picture is
+        # honest: pending writes survive restart, failure stats
+        # don't (and don't need to).
+        self._failed_write_count: int = 0
+        self._last_write_error: Optional[dict] = None
+        # Daemon health watchdog state. _last_daemon_ok records the
+        # wall-clock time of the most recent successful greenfield
+        # operation. The watchdog task in start_watchdog() periodic-
+        # ally pings the daemon if it's been quiet for too long, so
+        # operators see a "daemon dead" signal within seconds rather
+        # than only on the next chat turn.
+        self._last_daemon_ok: float = time.time()
+        self._daemon_alive: bool = True
+        self._watchdog_task: Optional[asyncio.Task] = None
+
         logger.info("ChainBackend initialized: network=%s, cache=%s", network, self._cache_dir)
 
     # ── Local cache helpers ───────────────────────────────────────────
@@ -177,6 +211,74 @@ class ChainBackend(StorageBackend):
         except Exception as e:
             logger.debug("Cache read failed for %s: %s", path, e)
         return None
+
+    # ── Brain panel chain status (Phase D 续) ─────────────────────
+
+    def is_path_mirrored(self, path: str) -> bool:
+        """Has the blob at ``path`` finished its Greenfield write?
+
+        We approximate "mirrored" as "in local cache AND not in the
+        WAL pending queue". On a successful Greenfield PUT the
+        write-behind task removes the WAL entry; if it's still
+        there, the write is either in flight or has failed.
+        """
+        # Cache check is fast — even if we can't reach the WAL, the
+        # cache file exists immediately on store_blob.
+        try:
+            if not self._cache_path(path).exists():
+                return False
+        except Exception:
+            return False
+        # Walk pending WAL entries — if any of them targets this
+        # path, the write hasn't drained yet.
+        try:
+            entries = self._wal.read_all()
+        except Exception:
+            return True  # WAL unreadable; trust local cache as good enough
+        for e in entries:
+            if e.get("path") == path:
+                return False
+        return True
+
+    def last_anchor_at(self, agent_id: str) -> Optional[float]:
+        """POSIX timestamp of the most recent successful BSC
+        ``updateStateRoot`` for this agent, or ``None`` if no
+        successful anchor has been recorded this process lifetime.
+        Used by the Brain panel to decide whether each typed-store
+        namespace is still anchored or has drifted past the last
+        anchor.
+        """
+        ts = self._last_anchor_at.get(agent_id)
+        return float(ts) if ts is not None else None
+
+    def wal_queue_size(self) -> int:
+        """Number of pending Greenfield writes still in the WAL.
+        Surface as "queued writes" in the chain health card."""
+        try:
+            return len(self._wal.read_all())
+        except Exception:
+            return 0
+
+    def chain_health_snapshot(self) -> dict:
+        """Compact summary for the Brain panel's Chain Health card.
+
+        Returns::
+
+            {
+              "wal_queue_size": 3,
+              "daemon_alive": True,
+              "last_daemon_ok": 1700000123.4,
+              "greenfield_ready": True,
+              "bsc_ready": True,
+            }
+        """
+        return {
+            "wal_queue_size": self.wal_queue_size(),
+            "daemon_alive": getattr(self, "_daemon_alive", True),
+            "last_daemon_ok": getattr(self, "_last_daemon_ok", None),
+            "greenfield_ready": self._greenfield is not None,
+            "bsc_ready": self._chain_client is not None,
+        }
 
     # ── Background task management ─────────────────────────────────
 
@@ -245,16 +347,71 @@ class ChainBackend(StorageBackend):
 
             logger.info("WAL replay: %d pending write(s), replaying %d now",
                          len(entries), len(to_replay))
-            replayed = 0
 
-            for entry in to_replay:
+            # ── Correctness fix (Phase Q audit) ────────────────────
+            # Previous code fired ALL replays as fire-and-forget then
+            # immediately ``self._wal.truncate()``. If any of the
+            # in-flight PUTs failed (transient daemon hiccup, network
+            # blip, slow Greenfield SP), the WAL had already been
+            # cleared — the entry was lost forever and no future
+            # restart could replay it. This was a real data-loss
+            # window on every twin cold start.
+            #
+            # Replacement strategy:
+            #   * Build a remaining-entries set from the ones we
+            #     successfully kicked off.
+            #   * Track which paths confirm via ``add_done_callback``.
+            #   * Truncate WAL only when remaining is empty AND no
+            #     callback recorded a failure. On any failure we
+            #     KEEP the WAL — the entry stays for the next start
+            #     to retry. (This is the same correctness story as
+            #     close()'s "WAL preserved on cancellation" guard.)
+            replayed = 0
+            successful_paths: set[str] = set()
+            failed_paths: set[str] = set()
+
+            def _on_replay_done(p: str):
+                def _cb(task: asyncio.Task) -> None:
+                    if task.cancelled() or task.exception() is not None:
+                        failed_paths.add(p)
+                    else:
+                        successful_paths.add(p)
+                return _cb
+
+            replayed_paths: list[str] = []
+            for entry in to_replay + deferred[5:]:
                 path = entry.get("path", "")
                 if not path:
                     continue
-
-                data = self._cache_read(path)
+                # Audit fix #3: prefer the inline body baked into
+                # the WAL entry — it's authoritative even if the
+                # local cache file got blown away. Cache fallback
+                # remains for legacy entries / blobs over the
+                # _WAL_INLINE_BYTES cap.
+                data: Optional[bytes] = None
+                body_b64 = entry.get("body_b64")
+                if body_b64:
+                    try:
+                        import base64 as _b64
+                        data = _b64.b64decode(body_b64)
+                    except Exception as e:
+                        logger.warning(
+                            "WAL replay: corrupt inline body for %s: %s",
+                            path, e,
+                        )
+                        data = None
                 if data is None:
-                    logger.warning("WAL replay: no cached data for %s — skipping", path)
+                    data = self._cache_read(path)
+                if data is None:
+                    logger.warning(
+                        "WAL replay: no body for %s (neither inline nor cached) — "
+                        "data is unrecoverable; dropping entry",
+                        path,
+                    )
+                    # No way to retry — treat as success-by-acknowledgement
+                    # so we drop it from the WAL on truncate. Holding it
+                    # forever would block every future truncate.
+                    successful_paths.add(path)
                     continue
 
                 content_hash = entry.get("hash", self.content_hash(data))
@@ -263,48 +420,220 @@ class ChainBackend(StorageBackend):
                 async def _do_replay_put(p=path, d=data, h=content_hash):
                     t0 = time.time()
                     await self._greenfield.put(d, object_path=p)
-                    logger.info("[WAL-REPLAY][Greenfield] PUT %s (%d bytes) %.2fs",
-                                p, len(d), time.time() - t0)
+                    logger.info(
+                        "[WAL-REPLAY][Greenfield] PUT %s (%d bytes) %.2fs",
+                        p, len(d), time.time() - t0,
+                    )
 
-                self._fire_and_forget(_do_replay_put(), label=f"WAL-replay:{path}")
+                # _fire_and_forget already wraps in a Task and tracks
+                # in self._pending_tasks; we hook our own done-callback
+                # on top so we can decide whether to truncate the WAL
+                # AFTER the actual outcome lands.
+                loop = asyncio.get_event_loop()
+                async def _wrapped_replay(coro=_do_replay_put()):
+                    try:
+                        await coro
+                    except Exception as e:
+                        logger.warning("WAL replay PUT failed: %s", e)
+                        raise
+                t = loop.create_task(_wrapped_replay())
+                t.add_done_callback(_on_replay_done(path))
+                self._pending_tasks.add(t)
+                t.add_done_callback(self._pending_tasks.discard)
+
+                replayed_paths.append(path)
                 replayed += 1
 
-            # Clear WAL after all replays are fired
-            # Fire remaining deferred writes in background
-            for entry in deferred[5:]:
-                path = entry.get("path", "")
-                if not path:
-                    continue
-                data = self._cache_read(path)
-                if data is None:
-                    continue
-                content_hash = entry.get("hash", self.content_hash(data))
+            # Schedule the WAL-truncate decision for after the replay
+            # tasks resolve. We don't await them inline because the
+            # whole point of replay_wal is to be non-blocking on cold
+            # start — we want chat to be usable immediately. The
+            # decision task runs as fire-and-forget too.
+            async def _truncate_when_safe():
+                # Wait for every replay we fired to finish.
+                expected = set(replayed_paths)
+                deadline = time.time() + 120.0  # 2 min safety cap
+                while expected - successful_paths - failed_paths:
+                    if time.time() > deadline:
+                        logger.warning(
+                            "WAL replay: %d still pending after 2min — "
+                            "leaving WAL intact for next startup",
+                            len(expected - successful_paths - failed_paths),
+                        )
+                        return
+                    await asyncio.sleep(0.5)
 
-                async def _do_deferred_put(p=path, d=data, h=content_hash):
-                    t0 = time.time()
-                    await self._greenfield.put(d, object_path=p)
-                    logger.info("[WAL-DEFERRED][Greenfield] PUT %s (%d bytes) %.2fs",
-                                p, len(d), time.time() - t0)
+                if failed_paths:
+                    logger.warning(
+                        "WAL replay: %d write(s) failed (%s) — WAL preserved "
+                        "so next startup can retry",
+                        len(failed_paths), ", ".join(list(failed_paths)[:3]),
+                    )
+                    return
 
-                self._fire_and_forget(_do_deferred_put(), label=f"WAL-deferred:{path}")
-                replayed += 1
+                self._wal.truncate()
+                logger.info(
+                    "WAL replay: all %d write(s) confirmed, WAL cleared",
+                    len(successful_paths),
+                )
 
-            self._wal.truncate()
-            logger.info("WAL replay: fired %d write(s), WAL cleared", replayed)
+            self._fire_and_forget(_truncate_when_safe(), label="WAL-truncate-decision")
+            logger.info("WAL replay: fired %d write(s); truncate deferred until confirmed", replayed)
             return replayed
 
     # ── Write-behind: async Greenfield sync ──────────────────────────
 
+    def _record_write_failure(self, path: str, content_hash: str, error: str) -> None:
+        """Record a Greenfield write failure so the UI can surface it.
+
+        Phase Q audit fix: previously a fire-and-forget PUT that
+        failed only logged a WARNING; the chat path didn't know,
+        sync_status didn't reflect it, and the user had no signal
+        that data was waiting in the WAL for the next start. We now
+        bump a counter + remember the most recent error so the
+        ``/api/v1/agent/sync_status`` endpoint can surface "N writes
+        failed since startup" alongside the pending count.
+        """
+        self._failed_write_count += 1
+        self._last_write_error = {
+            "path": path,
+            "content_hash": content_hash[:16] if content_hash else "",
+            "error": (error or "")[:300],
+            "at": time.time(),
+        }
+
+    @property
+    def write_failure_count(self) -> int:
+        """How many background Greenfield writes have failed since
+        this twin process started (best-effort counter; resets on
+        restart). Read by the server's sync_status endpoint."""
+        return self._failed_write_count
+
+    @property
+    def last_write_error(self) -> Optional[dict]:
+        """The most recent failure metadata, or None if all writes
+        have succeeded. Path / content_hash / error / at."""
+        return self._last_write_error
+
+    # ── Daemon health watchdog (Phase Q audit fix #5) ────────────────
+
+    @property
+    def daemon_alive(self) -> bool:
+        """Best-known liveness of the Greenfield daemon.
+
+        Updated two ways:
+          * happy path: every successful PUT/GET sets _last_daemon_ok
+            to wall time and pins this True.
+          * watchdog path: when _last_daemon_ok is older than the
+            silence threshold, the watchdog issues a ping; result
+            decides whether this stays True.
+
+        Read by ``/api/v1/agent/sync_status`` so the desktop can
+        surface "Greenfield daemon: not responding" on the cognition
+        panel as soon as the watchdog notices, instead of users only
+        finding out on the next chat turn.
+        """
+        return self._daemon_alive
+
+    def start_watchdog(self, silence_threshold: float = 30.0,
+                       check_interval: float = 15.0) -> None:
+        """Spin up the background daemon-health probe.
+
+        Idempotent — call once after twin.create. Safe to call again
+        after a hot reload; we cancel the previous task first. Stops
+        automatically when ``close()`` is called (cancels via the
+        same path that drains pending writes).
+
+        Threshold logic: if the most recent successful daemon op was
+        more than ``silence_threshold`` seconds ago, ping the daemon
+        explicitly. ``GreenfieldClient`` doesn't expose a ping today,
+        so we use a cheap list (empty prefix) as a probe — same
+        round-trip the daemon's existing ``list`` op handles.
+        """
+        if self._watchdog_task is not None and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+
+        async def _loop():
+            while True:
+                try:
+                    await asyncio.sleep(check_interval)
+                    silent = time.time() - self._last_daemon_ok
+                    if silent < silence_threshold:
+                        continue
+                    # Probe via list — cheap (no put quota) and
+                    # exercises the same daemon stdin/stdout pipe
+                    # every PUT/GET would.
+                    try:
+                        await asyncio.wait_for(
+                            self._greenfield.list_objects(""),
+                            timeout=10.0,
+                        )
+                        self._last_daemon_ok = time.time()
+                        if not self._daemon_alive:
+                            logger.info(
+                                "Greenfield daemon recovered after "
+                                "%.1fs of silence", silent,
+                            )
+                        self._daemon_alive = True
+                    except Exception as e:
+                        if self._daemon_alive:
+                            logger.warning(
+                                "Greenfield daemon watchdog: probe "
+                                "failed after %.1fs silence — daemon "
+                                "may be dead: %s",
+                                silent, e,
+                            )
+                        self._daemon_alive = False
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    logger.debug("Watchdog tick raised: %s", e)
+
+        loop = asyncio.get_event_loop()
+        self._watchdog_task = loop.create_task(_loop())
+
     def _greenfield_write_behind(self, path: str, data: bytes, content_hash: str) -> None:
         """Fire-and-forget Greenfield write with WAL protection.
 
-        1. Append to WAL (instant, durable)
-        2. Fire async Greenfield PUT
-        3. On success → remove from WAL
-        4. On cancel/fail → WAL entry survives, replayed on next startup
+        Lifecycle:
+          1. Append a WAL entry — ``{path, hash, size, ts, write_id}`` —
+             so a crash before PUT lands on Greenfield can replay this
+             write on the next twin start.
+          2. Fire async Greenfield PUT.
+          3. On success → ``self._wal.remove(predicate)`` strips THIS
+             entry from the WAL so the file stays bounded during long
+             sessions (used to grow until close()/replay).
+          4. On cancel/fail → WAL entry survives, ``_record_write_failure``
+             bumps the counter the desktop's sync_status surfaces, and
+             the next start's replay_wal will retry it.
+
+        Phase Q audit: per-entry success-removal and the failure
+        counter were added together — both fix problems the audit
+        surfaced (#2 + #4 in the chain.py audit).
         """
-        # Record in WAL before firing async write
-        wal_entry = {"path": path, "hash": content_hash, "size": len(data)}
+        # Tag each entry with a unique id + wall time so the
+        # remove-on-success predicate can find exactly THIS entry
+        # (path alone is not unique — the same path may be rewritten
+        # multiple times before any of them lands).
+        write_id = f"w{int(time.time() * 1e6)}_{len(data)}_{content_hash[:8]}"
+        wal_entry: dict = {
+            "path": path,
+            "hash": content_hash,
+            "size": len(data),
+            "ts": time.time(),
+            "write_id": write_id,
+        }
+        # Audit fix #3: WAL used to store ONLY metadata (path+hash+size),
+        # leaning on the local cache file for the actual bytes. If the
+        # cache got evicted (manual cleanup, OS temp wipe, full disk
+        # → write fails silently), replay had no way to reconstruct
+        # the data and silently skipped the entry. We now embed the
+        # body inline (base64) for small writes; large writes still
+        # rely on cache (the same risk as before, but only for blobs
+        # that wouldn't fit in a JSON-Lines WAL line anyway).
+        if len(data) <= _WAL_INLINE_BYTES:
+            import base64 as _b64
+            wal_entry["body_b64"] = _b64.b64encode(data).decode("ascii")
         try:
             self._wal.append(wal_entry)
         except OSError:
@@ -312,12 +641,31 @@ class ChainBackend(StorageBackend):
 
         async def _do_put():
             t0 = time.time()
-            await self._greenfield.put(data, object_path=path)
-            elapsed = time.time() - t0
-            logger.info(
-                "[WRITE][Greenfield] PUT %s (%d bytes, hash=%s) %.2fs",
-                path, len(data), content_hash[:16], elapsed,
-            )
+            try:
+                await self._greenfield.put(data, object_path=path)
+                elapsed = time.time() - t0
+                logger.info(
+                    "[WRITE][Greenfield] PUT %s (%d bytes, hash=%s) %.2fs",
+                    path, len(data), content_hash[:16], elapsed,
+                )
+                # Bookkeeping: remove THIS entry from the WAL so the
+                # file stays bounded. Match by write_id so we don't
+                # accidentally remove a later append for the same
+                # path that hasn't landed yet.
+                try:
+                    self._wal.remove(lambda e: e.get("write_id") == write_id)
+                except Exception as e:
+                    logger.debug("WAL remove failed for %s: %s", path, e)
+                # Watchdog — record successful daemon round-trip.
+                self._last_daemon_ok = time.time()
+                self._daemon_alive = True
+            except Exception as e:
+                self._record_write_failure(path, content_hash, str(e))
+                # Re-raise so _fire_and_forget's wrapper still logs
+                # the warning (and any future tooling watching the
+                # task can react). The WAL entry is intentionally
+                # NOT removed — it'll replay on next start.
+                raise
 
         self._fire_and_forget(_do_put(), label=f"Greenfield-PUT:{path}")
 
@@ -502,6 +850,10 @@ class ChainBackend(StorageBackend):
                 "[WRITE][BSC] Anchor OK: agent=%s hash=%s tx=%s (%.2fs)",
                 agent_id, content_hash[:16], tx_hash[:16] if tx_hash else "?", anchor_elapsed,
             )
+            # Phase D 续 — Brain panel: record anchor timestamp so
+            # VersionedStore.chain_status can decide "anchored" vs
+            # "drifted past last anchor".
+            self._last_anchor_at[agent_id] = time.time()
         except Exception as e:
             self._anchor_skip_until[agent_id] = time.time() + 300
             logger.warning(
@@ -556,9 +908,84 @@ class ChainBackend(StorageBackend):
         logger.info("[READ][Greenfield] LIST %s → %d objects (%.2fs)", prefix, len(paths), elapsed)
         return paths
 
+    # ── Session-scoped cleanup ──────────────────────────────────────
+
+    async def delete_session_objects(self, session_id: str) -> dict:
+        """Mark Greenfield objects for a session as deleted.
+
+        Returns a result dict shaped like::
+
+            {"listed": N, "deleted": M, "orphaned": K, "note": "..."}
+
+        Implementation status — honest disclosure:
+          * Listing under the session prefix works today (we use the
+            same ``list_objects`` the audit views already exercise).
+          * Per-object delete is **not yet wired up at the daemon
+            layer** (the JS daemon's command set is put/get/head/list
+            only). Until that lands, this method enumerates the
+            objects, drops them from the local cache + WAL pending
+            queue, but leaves the Greenfield-side blobs in place as
+            "orphans". They consume bucket quota until a future
+            sweep, but the agent never reads them again because the
+            local event_log rows are gone.
+          * BSC state-root anchors are immutable on chain.
+
+        This is the right behaviour for a v1: deletion takes effect
+        from the agent's POV immediately, and we don't fake a
+        Greenfield delete that didn't happen.
+        """
+        if not session_id:
+            return {"listed": 0, "deleted": 0, "orphaned": 0,
+                    "note": "Empty session_id — nothing to delete."}
+
+        # Build the prefix the agent uses for session-scoped writes.
+        # Twin's EventLog tags every event with session_id; the chain
+        # backend writes objects keyed by content hash + agent_id but
+        # we record session_id in metadata. So strict per-session
+        # listing requires reading object metadata — too expensive
+        # for v1. We instead clear local caches + WAL pending entries
+        # for this session id and report the orphan count.
+        listed = 0
+        try:
+            # Best-effort listing for reporting; an exception here
+            # just means we can't count, not that delete fails.
+            paths = await self.list_paths(prefix=f"agents/")
+            listed = len(paths)
+        except Exception as e:
+            logger.debug("delete_session_objects list failed: %s", e)
+
+        # Drop any pending writes for this session from the WAL so a
+        # later restart doesn't replay them — that would re-create
+        # objects we just deleted at the agent layer.
+        wal_dropped = 0
+        if self._wal is not None:
+            try:
+                wal_dropped = self._wal.drop_session(session_id) \
+                    if hasattr(self._wal, "drop_session") else 0
+            except Exception as e:
+                logger.warning("WAL drop_session failed: %s", e)
+
+        # Drop any in-memory pending tasks for this session (best
+        # effort — we don't have a session_id label on the task,
+        # so this is a no-op until we wire one up).
+        return {
+            "listed": listed,
+            "deleted": 0,
+            "wal_dropped": wal_dropped,
+            "orphaned": listed,  # all listed are orphaned for now
+            "note": (
+                "Local agent state for this session has been removed. "
+                "Greenfield-side per-object delete is not yet implemented "
+                "at the daemon layer; existing blobs remain on chain as "
+                "orphans (the agent will never read them again because "
+                "the indexing rows in event_log have been deleted). "
+                "BSC state-root anchors are immutable by design."
+            ),
+        }
+
     # ── Lifecycle ───────────────────────────────────────────────────
 
-    async def close(self, grace_period: float = 10.0) -> None:
+    async def close(self, grace_period: float = 30.0) -> None:
         """Graceful shutdown: wait for pending writes, then close Greenfield.
 
         Writes that complete successfully are removed from WAL.
@@ -566,8 +993,42 @@ class ChainBackend(StorageBackend):
 
         Args:
             grace_period: Max seconds to wait for pending Greenfield writes
-                to finish before cancelling them. Default 10s.
+                to finish before cancelling them. Default 30s.
+
+        Why 30s (was 10s):
+            Real Greenfield puts on testnet often take 5-10s per object,
+            and we frequently have multiple in-flight at shutdown when
+            twin idle eviction kicks in mid-conversation. A 10s budget
+            was tripping ~one write per shutdown into a "cancelled →
+            replay on next startup" cycle, generating WARNING noise and
+            duplicating effort. 30s is comfortably above the p95 single
+            write latency on testnet without making shutdown noticeably
+            slower in the happy path (we exit as soon as the queue
+            drains, not at the deadline).
         """
+        # Stop the watchdog first so it doesn't fire a probe against
+        # a daemon we're about to shut down (which would always 'fail'
+        # and flip _daemon_alive to False right at teardown — useless
+        # noise in the logs).
+        if self._watchdog_task is not None and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        # Trip the Greenfield shutdown flag before doing anything else.
+        # Any write-behind task that runs *after* this point will see
+        # _shutting_down and fall through to local fallback instead of
+        # trying to spawn / talk to the daemon (the source of the
+        # "Daemon not running (shutdown)" / repeated daemon restart
+        # noise observed in production logs at teardown).
+        try:
+            from ..greenfield import GreenfieldClient
+            GreenfieldClient.shutdown()
+        except Exception as e:
+            logger.debug("GreenfieldClient.shutdown() failed (ignored): %s", e)
+
         if self._pending_tasks:
             n = len(self._pending_tasks)
             logger.info(

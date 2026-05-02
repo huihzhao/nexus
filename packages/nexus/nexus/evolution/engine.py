@@ -8,6 +8,9 @@ import logging
 from typing import Any
 
 from nexus_core import AgentRuntime
+from nexus_core.memory import (
+    FactsStore, EventLog, PersonaStore, SkillsStore, KnowledgeStore,
+)
 from .memory_evolver import MemoryEvolver
 from .skill_evolver import SkillEvolver
 from .skill_evaluator import SkillEvaluator
@@ -28,16 +31,61 @@ class EvolutionEngine:
         llm_fn: Any,
         default_persona: str = "",
         agent_name: str = "Twin",
+        facts_store: FactsStore | None = None,
+        event_log: EventLog | None = None,
+        persona_store: PersonaStore | None = None,
+        skills_store: SkillsStore | None = None,
+        knowledge_store: KnowledgeStore | None = None,
     ):
         self.rune = rune
         self.agent_id = agent_id
         self.llm_fn = llm_fn
 
-        self.memory = MemoryEvolver(rune, agent_id, llm_fn)
-        self.skills = SkillEvolver(rune, agent_id, llm_fn)
+        # Phase D: typed stores are required by every evolver. When
+        # the caller doesn't provide one (tests / standalone use),
+        # we synthesise an in-memory-equivalent store under a per-
+        # process temp dir so the engine still constructs cleanly.
+        # In production, DigitalTwin always passes the real,
+        # chain-mirrored stores constructed at twin init.
+        if (persona_store is None or skills_store is None
+                or knowledge_store is None or facts_store is None):
+            import tempfile
+            from pathlib import Path
+            scratch = Path(tempfile.gettempdir()) / f"nexus-engine-scratch-{agent_id}"
+            scratch.mkdir(parents=True, exist_ok=True)
+            if persona_store is None:
+                persona_store = PersonaStore(base_dir=scratch)
+            if skills_store is None:
+                skills_store = SkillsStore(base_dir=scratch)
+            if knowledge_store is None:
+                knowledge_store = KnowledgeStore(base_dir=scratch)
+            if facts_store is None:
+                facts_store = FactsStore(base_dir=scratch)
+
+        self.memory = MemoryEvolver(
+            rune, agent_id, llm_fn,
+            facts_store=facts_store,
+            event_log=event_log,  # Phase O.2: emit evolution_proposal
+        )
+        self.skills = SkillEvolver(
+            rune, agent_id, llm_fn,
+            event_log=event_log,         # Phase O.2 instrumentation
+            skills_store=skills_store,
+        )
         self.evaluator = SkillEvaluator(llm_fn)
-        self.persona = PersonaEvolver(rune, agent_id, llm_fn)
-        self.knowledge = KnowledgeCompiler(rune, agent_id, llm_fn)
+        self.persona = PersonaEvolver(
+            rune, agent_id, llm_fn,
+            event_log=event_log,        # Phase O.2 instrumentation
+            persona_store=persona_store,
+        )
+        self.knowledge = KnowledgeCompiler(
+            rune, agent_id, llm_fn,
+            event_log=event_log,         # Phase O.2 instrumentation
+            knowledge_store=knowledge_store,
+            # Phase D 续: source facts come from facts_store
+            # (canonical), not rune.memory anymore.
+            facts_store=facts_store,
+        )
         self.social = SocialEngine(rune, agent_id, llm_fn, agent_name=agent_name)
 
         self._default_persona = default_persona
@@ -71,13 +119,11 @@ class EvolutionEngine:
         self._initialized = True
 
     async def _preload_memories(self):
-        """Trigger memory lazy-load so it's ready for get_context_for_query().
-
-        This calls _ensure_loaded() on the SDK MemoryProvider, which reads
-        from Greenfield on cold start and populates the in-memory index.
-        After this, search_compact() and search() are instant.
+        """Phase D 续: facts_store reads synchronously from disk —
+        there is no async warm-up. Kept as a no-op so the
+        ``initialize`` gather signature (4 awaitables) doesn't change.
         """
-        await self.rune.memory._ensure_loaded(self.agent_id)
+        return None
 
     async def after_conversation_turn(
         self, conversation: list[dict], max_memories: int = 5,
@@ -206,8 +252,13 @@ class EvolutionEngine:
         """Full reflection cycle: persona evolution + knowledge compilation."""
         mem_stats = await self.memory.get_stats()
         skill_stats = await self.skills.get_stats()
-        all_memories = await self.rune.memory.list_all(self.agent_id)
-        memory_texts = [m.content for m in all_memories[-15:]]
+        # Phase D 续: pull recent facts from facts_store (canonical),
+        # newest-first, take the last 15. ``memory.facts_store`` is
+        # the auto-synthesised or twin-injected store — same source
+        # MemoryEvolver writes to.
+        all_facts = self.memory.facts_store.all()
+        all_facts.sort(key=lambda f: f.created_at)
+        memory_texts = [f.content for f in all_facts[-15:]]
 
         # ── Persona evolution ──
         evolution_result = await self.persona.evolve(

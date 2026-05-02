@@ -131,3 +131,57 @@ class EventLogCompactor:
     @property
     def last_compact_turn(self) -> int:
         return self._last_compact_turn
+
+    # ── Phase C: Evolution Pressure dashboard ─────────────────────
+
+    def pressure_state(self) -> dict:
+        """Per-evolver state for the Pressure Dashboard.
+
+        Compactor fires every ``compact_interval`` turns (default
+        20). Accumulator = events_since_last_compact, threshold =
+        the interval. Status transitions:
+          * "warming"     — fewer than threshold events accumulated
+          * "ready"       — threshold reached, next chat turn fires
+          * "fired_recently" — fired within the last 60s
+
+        ``details.trajectory_chars`` exposes the secondary trigger
+        (compact only fires when trajectory > 0.8 × char_threshold)
+        so the lineage view can show "fired because volume > X" vs
+        "fired because turn count hit interval".
+        """
+        current = self._log.count()
+        delta = max(0, current - self._last_compact_turn)
+        # "fired recently" detection: if a memory_compact event
+        # showed up in the last few rows, the gauge briefly flashes
+        # so the user sees their compaction lit up. Cheap scan over
+        # bounded recent window.
+        last_fired_at = None
+        try:
+            for ev in self._log.recent(limit=20):
+                if ev.event_type == "memory_compact":
+                    last_fired_at = float(ev.timestamp)
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        if delta == 0:
+            status = "fired_recently" if last_fired_at else "idle"
+        elif delta >= self._interval:
+            status = "ready"
+        else:
+            status = "warming"
+        return {
+            "evolver": "EventLogCompactor",
+            "layer": "L1",
+            "accumulator": float(delta),
+            "threshold": float(self._interval),
+            "unit": "events",
+            "status": status,
+            "fed_by": ["chat.turn"],
+            "last_fired_at": last_fired_at,
+            "details": {
+                "interval": self._interval,
+                "char_threshold": self._threshold,
+                "last_compact_turn": self._last_compact_turn,
+                "current_event_count": current,
+            },
+        }

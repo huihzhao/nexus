@@ -1,197 +1,210 @@
-# Rune Protocol Desktop
+# Nexus Desktop
 
-A cross-platform AI digital twin application built on the Rune Protocol. Features offline-first synchronization, secure local state management, and seamless integration with the BNB Chain ecosystem.
+> A cross-platform thin client for the Nexus DigitalTwin platform.
+> The desktop holds *no* persistent state of its own (post-Round-2
+> refactor — see HISTORY.md): every panel reads from the server's
+> view-shape APIs, and the server is the source of truth for chat
+> history, memories, anchors, and evolution timeline.
 
-## Project Overview
+For the platform-level story (immortal agents, DPM, falsifiable
+self-evolution, on-chain identity) read the root
+[`README.md`](../../README.md). This file is the desktop
+package-level reference.
 
-Rune Protocol Desktop is a desktop application that enables users to create and manage AI-powered digital twins with full event history, state management, and decentralized synchronization. The application runs natively on Windows, macOS, and Linux using Avalonia for a consistent cross-platform UI experience.
+---
 
-### Key Features
+## What the desktop renders
 
-- **Offline-First Architecture**: Full functionality without server connectivity; automatic sync when online
-- **Event-Sourced State**: Complete audit trail of all digital twin state changes
-- **Secure Token Management**: Encrypted local storage of authentication credentials
-- **Cross-Platform**: Native support for Windows, macOS, and Linux
-- **Real-Time Synchronization**: Background sync with configurable intervals
-- **BNB Chain Integration**: Direct blockchain interaction for decentralized operations
+```
+┌────────────────────────────────────────────────────────────────┐
+│  Top bar:  N  Nexus               status …  [user pill] ⏏     │
+│                                                                │
+│  Sidebar           Chat                  Cognition column     │
+│   ─────────         ───                   ─────────            │
+│   • twin name       user message          NOW (live thinking)  │
+│   • ERC-8004 badge  assistant reply       JUST HAPPENED        │
+│   • on-chain ctrs   …                     ON CHAIN feed        │
+│                                           AUDIT TRAIL          │
+│   • [📋 Progress]                         EVOLUTION PRESSURE   │
+│   • [🗂 Workdir]                          ↳ gauges + 24h hist  │
+│   ─────────                               ↳ recent verdicts    │
+│   • [Browse memories]   slide-over →                           │
+│   • [Brain panel]       slide-over →                           │
+│   • [Evolution timeline] slide-over →                          │
+│   • [Browse anchors]    slide-over →                           │
+│                                                                │
+│  Activity stream (auto-refreshing)                             │
+└────────────────────────────────────────────────────────────────┘
+```
+
+The slide-over panels read from server view-shape endpoints and refresh
+on demand:
+
+- **Brain panel** (Phase D 续 / #159) — replaces the old Memory
+  namespaces dump with a learning-progress + chain-status view. Five
+  sections answer *"is my agent learning, and is what it learned
+  safely on chain?"*:
+  1. **Brain at a Glance** — five namespace cards (persona /
+     knowledge / skills / facts / episodes), each showing total
+     count, today's delta, and a 3-dot chain status indicator
+     (● local · ● mirrored to Greenfield · ● anchored on BSC).
+  2. **Learning Timeline** — last 7 days as bars (auto-normalised
+     against the week's max so the pyramid shape jumps out).
+  3. **Data Flow** — the chat → facts → skills → knowledge →
+     persona pipeline with each evolver's `live` / `ready ⏳` /
+     `just fired` / `N/threshold` status and a mini progress bar.
+  4. **Just Learned** — newest-first feed of recent additions across
+     the five namespaces, each tagged with kind (FACT / SKILL /
+     PERSONA …) and chain dots.
+  5. **Chain Health** — bottom card: WAL queue size, daemon state,
+     Greenfield + BSC readiness — answers "why isn't anything
+     anchoring yet?" at a glance.
+
+  Backed by `GET /api/v1/agent/chain_status` + `GET
+  /api/v1/agent/learning_summary?window=7d` (parallel-fetched).
+
+- **Evolution timeline** (Phase O.5 + O.6) — every persona / memory /
+  skill edit shows up as a proposal row, settles into a verdict
+  (`kept` / `kept_with_warning` / `reverted`), and pending proposals
+  expose **Approve** / **Revert** buttons that drive
+  `POST /api/v1/agent/evolution/{edit_id}/{approve,revert}`.
+
+- **Browse memories** — historic `memory_compact` snapshots
+  (current brain + superseded history).
+
+- **Browse anchors** — BSC anchor history pulled from `/sync/anchors`.
+
+The always-visible **Cognition** column on the right runs four 2 s
+streams (NOW / JUST HAPPENED / ON CHAIN / AUDIT TRAIL) plus the
+**Evolution Pressure** dashboard and **Recent Verdicts** feed (Phase
+D 续 / #159) — gauges show what's about to evolve, the verdicts feed
+shows what was decided and why ("KEPT · regression: 30% · drift: +0.15").
+
+---
 
 ## Architecture
 
 ```
-Rune Protocol Desktop
-├── RuneDesktop.UI          (Avalonia client application)
-├── RuneDesktop.Core        (Domain models, engines, and infrastructure)
-├── RuneDesktop.Sync        (Offline-first sync engine)
-└── [Server]                (FastAPI backend at rune-nexus/server)
+RuneDesktop/
+├── RuneDesktop.UI         Avalonia views + view models (MVVM)
+├── RuneDesktop.Core       ApiClient + service abstractions
+└── RuneDesktop.UI.Tests   (planned)
 ```
 
-### Components
+`RuneDesktop.Sync` from earlier rounds is gone — see HISTORY for the
+Round 2 thin-client refactor that retired the local event log + bidi
+sync engine in favour of server-authoritative reads.
 
-#### RuneDesktop.Core
-- **Models**: EventEntry, RuneState, digital twin definitions
-- **ApiClient**: HTTP client for server communication with retry logic
-- **RuneEngine**: Business logic for managing digital twins
-- **LocalEventLog**: In-memory and persistent event storage
-- **SecureTokenStore**: Encrypted credential storage using system keyrings
+### RuneDesktop.Core
+- `Services/ApiClient.cs` — typed HTTP client (auth, retries, multipart
+  uploads, all view-shape endpoints)
+- `Services/ChainModels.cs` — DTOs for chain / memory / namespace /
+  evolution payloads
+- `Models/` — `EventEntry`, `ChatMessage`, `AgentProfile`, etc.
 
-#### RuneDesktop.UI
-- **Avalonia Framework**: Cross-platform reactive UI
-- **MVVM Architecture**: Clean separation of concerns
-- **ViewModels**: State management and business logic presentation
-- **Views**: Native platform-specific UI components
+### RuneDesktop.UI
+- `Views/ChatView.axaml` — main split: sidebar + chat + cognition +
+  slide-over panel
+- `Views/HistogramHeightConverter.cs` / `TimelineHeightConverter.cs` —
+  ratio→pixel height converters for the Pressure histogram (20 px) and
+  Brain timeline (60 px)
+- `ViewModels/ChatViewModel.cs` — chat state + slash-command surface
+- `ViewModels/DetailPanelViewModels.cs` — slide-over modes (Memories /
+  Anchors / **Brain** / Evolution / Progress / Workdir / Thinking) +
+  per-row VMs
+- `ViewModels/BrainPanelViewModel.cs` — five-section Brain panel
+  (Glance / Timeline / DataFlow / JustLearned / Health) with parallel
+  fetch of chain_status + learning_summary
+- `ViewModels/PressureDashboardViewModel.cs` — gauges + 24 h histogram
+  + recent verdicts feed
+- `ViewModels/CognitionPanelViewModel.cs` — owns the four live streams
+  + Pressure dashboard
+- `ViewModels/ActivityStreamViewModel.cs` — top-of-sidebar feed
+- `App.axaml.cs` — DI, login boot, JWT lifecycle
 
-#### RuneDesktop.Sync
-- **SyncEngine**: Offline-first delta synchronization with automatic retry
-- **SyncState**: Persistent sync point tracking per device
-- **Push/Pull Protocol**: Bidirectional event synchronization
-- **Auto-Sync**: Background timer for periodic synchronization
+---
 
-## Technology Stack
+## Technology stack
 
-- **Framework**: .NET 8.0
-- **UI**: Avalonia (cross-platform)
-- **API Client**: System.Net.Http
-- **Serialization**: System.Text.Json
-- **Storage**: SQLite (via Core)
-- **Security**: System keyrings / credential storage
-- **Server**: FastAPI (Python) at rune-nexus/server
+- **Framework**: .NET 8+ (.NET 10 in current `obj/` artifacts)
+- **UI**: Avalonia (cross-platform — Windows / macOS / Linux)
+- **MVVM**: CommunityToolkit.Mvvm with `[ObservableProperty]` /
+  `[RelayCommand]` source generators
+- **HTTP**: System.Net.Http with retry helper
+- **Serialisation**: System.Text.Json with `[JsonPropertyName]`
+- **Auth**: WebAuthn passkeys (server-driven ceremony shown via embedded
+  WebView)
 
-## Building & Running
+---
 
-### Prerequisites
-
-- .NET 8.0 SDK or later
-- Git
-- Python 3.10+ (for server only)
-
-### Build the Desktop App
+## Building & running
 
 ```bash
-cd rune-desktop
+# Server first (in another terminal)
+cd ../server
+uv run nexus-server
+
+# Desktop
+cd packages/desktop
+./scripts/build-icon.sh      # one-time: produces .ico / .icns / .png from SVG
 dotnet restore
-dotnet build
-```
-
-### Run the Application
-
-```bash
 dotnet run --project RuneDesktop.UI
 ```
 
-### Run the Backend Server
+The desktop expects the server at `http://localhost:8001` by default
+(configurable in `App.axaml.cs` settings boot).
 
-```bash
-cd ../rune-nexus
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
-python server/api_server.py
-```
+### App icon
 
-The server will start on `http://localhost:5000` by default.
+The dock / taskbar / Start-menu icon is derived from
+`RuneDesktop.UI/Assets/nexus-logo.svg`. Run
+`scripts/build-icon.sh` once to bake out the platform-specific raster
+files (`nexus-icon.ico` for Windows, `nexus-icon.icns` for macOS,
+`nexus-icon.png` for generic Linux). The csproj wires the .ico into
+the assembly; on macOS you additionally need to copy `nexus-icon.icns`
+into the bundle's `Contents/Resources/` and reference it from the
+generated `Info.plist` (`CFBundleIconFile = nexus-icon`). The
+in-app window icon (top-left of the title bar) loads the SVG directly
+via `Avalonia.Svg.Skia`, so it shows up even before you've run the
+build script.
 
-## Project Structure
+---
 
-```
-rune-desktop/
-├── RuneDesktop.Core/
-│   ├── Models/
-│   │   ├── EventEntry.cs
-│   │   ├── RuneState.cs
-│   │   └── ...
-│   ├── ApiClient.cs
-│   ├── RuneEngine.cs
-│   ├── LocalEventLog.cs
-│   └── SecureTokenStore.cs
-├── RuneDesktop.UI/
-│   ├── Views/
-│   │   ├── MainWindow.xaml
-│   │   ├── DigitalTwinView.xaml
-│   │   └── ...
-│   ├── ViewModels/
-│   │   ├── MainViewModel.cs
-│   │   ├── DigitalTwinViewModel.cs
-│   │   └── ...
-│   └── App.xaml.cs
-├── RuneDesktop.Sync/
-│   ├── SyncEngine.cs
-│   ├── SyncState.cs
-│   └── RuneDesktop.Sync.csproj
-├── global.json
-├── .gitignore
-└── README.md
-```
+## What changed since the older version of this README
 
-## API Endpoints
+- **Brain panel replaces Memory namespaces.** (Phase D 续 / #159) The
+  raw "5 typed-namespace dumps" view has been retired in favour of a
+  learning-progress + chain-status view: namespace counts + 7-day
+  bars + data-flow pyramid + just-learned feed + chain-health card.
+  Every item carries a 3-dot indicator (● local · ● mirrored ·
+  ● anchored) so users can see at a glance which writes are durable.
+- **Pressure dashboard verdicts feed.** (Phase D 续 / #159) The
+  always-visible Pressure dashboard now also shows recent kept /
+  reverted verdicts with the reasoning blurb ("regression: 30% ·
+  drift: +0.15") so falsifiable evolution is observable without
+  having to open the slide-over.
+- **Local sync engine retired.** Round 2 moved chat history + event
+  ownership to the server. The desktop no longer ships
+  `RuneDesktop.Sync` or `LocalEventLog`; authentication state is the
+  only thing it persists locally.
+- **Evolution moderation surface.** Pending proposals expose
+  Approve / Revert buttons that hit the server's manual decision
+  endpoints. The store rollback happens server-side; the desktop
+  refreshes the timeline.
+- **Brand cleanup.** Stale `RuneEngine` / `RuneSession*` / `RuneMemory*`
+  service names are gone (post-Phase-H rename).
 
-The desktop app communicates with the server via:
-
-- `POST /api/v1/sync/push` — Upload local unsynced events
-- `GET /api/v1/sync/pull?after=<sync_id>` — Download remote events since last sync
+---
 
 ## Configuration
 
-Sync parameters can be configured in `SyncEngine`:
+There's no client-side config file. The server URL, JWT, and
+WebAuthn ceremony URL come from settings the user enters at login.
+Token storage uses the OS-native credential vault via
+`Avalonia.Storage` helpers.
 
-```csharp
-// Start auto-sync with 30-second interval
-await syncEngine.StartAutoSync(TimeSpan.FromSeconds(30));
-```
-
-Sync state is persisted to:
-- **Windows**: `%APPDATA%\RuneProtocol\Sync\syncstate.json`
-- **macOS/Linux**: `~/.config/RuneProtocol/Sync/syncstate.json`
-
-## Development
-
-### Code Style
-- C# 11+ features enabled
-- Nullable reference types enforced
-- XML documentation on public APIs
-- MVVM pattern for UI code
-
-### Testing
-Run unit tests:
-```bash
-dotnet test
-```
-
-### Debugging
-Set breakpoints in Visual Studio or VS Code. The application includes comprehensive debug output via `Debug.WriteLine()`.
-
-## Security Considerations
-
-- All credentials are encrypted using system keyrings
-- HTTPS is used for all server communication (production)
-- Token refresh is automatic with server support
-- Sensitive data in URLs is avoided
-- Event data is validated before processing
-
-## Troubleshooting
-
-### App won't connect to server
-1. Verify server is running: `http://localhost:5000/health`
-2. Check network connectivity
-3. Review logs in Debug Output for detailed error messages
-
-### Events not syncing
-1. Check IsOnline status in SyncEngine
-2. Review sync state file: `~/.config/RuneProtocol/Sync/syncstate.json`
-3. Inspect Network tab in browser dev tools (if applicable)
-
-### Performance issues
-1. Check LocalEventLog for excessive events
-2. Consider archiving old events
-3. Monitor background sync frequency
-
-## Contributing
-
-See main repository guidelines for contribution standards, code review process, and PR requirements.
+---
 
 ## License
 
-Proprietary - Rune Protocol Team 2026
-
-## Support
-
-For issues, documentation, and feature requests, contact the Rune Protocol team or submit issues to the project repository.
+Apache 2.0.

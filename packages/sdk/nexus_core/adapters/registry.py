@@ -1,5 +1,5 @@
 """
-Rune Protocol — Adapter Registry (Registry Pattern).
+Nexus — Adapter Registry (Registry Pattern).
 
 Allows framework adapters to self-register and be discovered dynamically.
 Third parties can register their own adapters without modifying core code.

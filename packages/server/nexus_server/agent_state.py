@@ -22,6 +22,7 @@ from nexus_server.auth import get_current_user
 from nexus_server.database import get_db_connection
 from nexus_server.sync_anchor import list_anchors_for_user
 from nexus_server import twin_event_log
+from nexus_server import twin_manager
 
 # Back-compat re-exports (S3 → S5 evolution): these used to live here
 # as functions reading sync_events. After S5 they delegate to
@@ -68,6 +69,15 @@ class MemoriesResponse(BaseModel):
     total: int
 
 
+class AttachmentInfo(BaseModel):
+    """Structured attachment metadata for chat history reload.
+    Phase Q: replaces the old chip-prefix-in-text approach so the
+    desktop can render proper chips instead of fallback text."""
+    name: str
+    mime: str = "application/octet-stream"
+    size_bytes: int = 0
+
+
 class ChatMessageView(BaseModel):
     """A single chat message as rendered by the desktop. Server is the
     single source of truth — desktop never persists messages locally
@@ -76,6 +86,7 @@ class ChatMessageView(BaseModel):
     content: str
     timestamp: str      # ISO-8601 (server_received_at)
     sync_id: int
+    attachments: list[AttachmentInfo] = []
 
 
 class ChatMessagesResponse(BaseModel):
@@ -456,6 +467,7 @@ async def get_timeline(
 async def get_messages(
     limit: int = 200,
     before_sync_id: Optional[int] = None,
+    session_id: Optional[str] = None,
     current_user: str = Depends(get_current_user),
 ) -> ChatMessagesResponse:
     """Server-authoritative chat history.
@@ -472,12 +484,21 @@ async def get_messages(
 
     Returns oldest first within the requested window. ``before_sync_id``
     is the pagination cursor — it maps to the EventLog's ``idx``.
+
+    ``session_id`` (multi-session, see ``sessions_router``):
+      * omitted — return all messages across every thread. Used by
+        tools that don't care about thread boundaries (audit, dump).
+      * ``""``  — only the synthetic default session (rows with empty
+        session_id, i.e. pre-multi-session chat history).
+      * any other — only that named session's messages.
     """
     if limit <= 0 or limit > 500:
         limit = 200
 
     raw_messages, total = twin_event_log.list_messages(
-        current_user, limit, before_idx=before_sync_id,
+        current_user, limit,
+        before_idx=before_sync_id,
+        session_id=session_id,
     )
     messages = [
         ChatMessageView(
@@ -485,6 +506,10 @@ async def get_messages(
             content=m["content"],
             timestamp=m["timestamp"],
             sync_id=m["sync_id"],
+            attachments=[
+                AttachmentInfo(**a) for a in (m.get("attachments") or [])
+                if isinstance(a, dict) and a.get("name")
+            ],
         )
         for m in raw_messages
     ]
@@ -503,6 +528,1293 @@ async def get_memories(
     return MemoriesResponse(
         memories=[MemoryEntry(**r) for r in rows],
         total=memory_compact_count(current_user),
+    )
+
+
+# ── Phase J: typed memory namespaces (BEP-Nexus §3.3) ──────────────
+
+
+class NamespaceSummary(BaseModel):
+    """Compact summary for the desktop sidebar's Memory tab."""
+    name: str                         # "episodes" | "facts" | "skills" | "persona" | "knowledge"
+    item_count: int
+    current_version: Optional[str]    # VersionedStore label, or None if never committed
+    version_count: int                # how many committed snapshots exist
+
+
+class NamespacesResponse(BaseModel):
+    """Aggregated read across all 5 typed namespaces."""
+    namespaces: list[NamespaceSummary]
+    # Optional rich payload for clients that want detail without
+    # making 5 separate calls. Keys mirror the namespace name; values
+    # are lists of dicts (each store's ``to_dict`` shape).
+    items: dict[str, list[dict]]
+
+
+class SyncStatus(BaseModel):
+    """Per-path sync state + bucket health.
+
+    Driven by the chain backend's WAL + GreenfieldClient state. The
+    desktop uses this to badge each Workdir file:
+      * NOT in pending_paths AND bucket_created → ✅ synced
+      * IN pending_paths or bucket NOT created → ⏳ pending / local-only
+    """
+    pending_paths: list[str]
+    wal_entry_count: int
+    bucket: str
+    # Has the SP confirmed the agent's bucket exists? When False,
+    # EVERY put has fallen back to local — none of the files in the
+    # workdir have actually landed on Greenfield. The desktop shows
+    # a prominent warning in this case.
+    bucket_created: bool = False
+    bucket_status_detail: str = ""
+    # Phase Q audit fix #4: surface background write failures so the
+    # cognition panel can show "N writes failed since startup" instead
+    # of users only finding out via server logs.
+    write_failure_count: int = 0
+    last_write_error: Optional[dict] = None
+    # Phase Q audit fix #5: daemon liveness — the watchdog flips
+    # this False within ~30s of the Greenfield daemon dying so the
+    # desktop can show a "daemon not responding" badge.
+    daemon_alive: bool = True
+
+
+@router.get("/sync_status", response_model=SyncStatus)
+async def get_sync_status(
+    current_user: str = Depends(get_current_user),
+) -> SyncStatus:
+    """Read the chain backend's WAL — every entry is a Greenfield
+    write that hasn't been confirmed yet (either the put is in
+    flight, or the previous shutdown cancelled it before completing).
+
+    Lets the desktop's Work Directory annotate each file:
+      * NOT in pending_paths → ✅ synced (or never existed)
+      * IN pending_paths     → ⏳ pending Greenfield put
+    """
+    twin = await twin_manager.get_twin(current_user)
+    bucket = ""
+    pending: list[str] = []
+    write_failure_count = 0
+    last_write_error: Optional[dict] = None
+    daemon_alive = True
+    try:
+        rune = getattr(twin, "rune", None)
+        backend = getattr(rune, "_backend", None) if rune else None
+        if backend is None and rune is not None:
+            backend = getattr(rune, "backend", None)
+        if backend is not None:
+            wal = getattr(backend, "_wal", None)
+            if wal is not None:
+                pending = sorted({
+                    e.get("path", "") for e in wal.read_all()
+                    if e.get("path")
+                })
+            gf = getattr(backend, "_greenfield", None)
+            if gf is not None:
+                bucket = getattr(gf, "_bucket_name", "") or getattr(gf, "bucket_name", "") or ""
+            # Phase Q audit fix #4 + #5
+            write_failure_count = int(
+                getattr(backend, "write_failure_count", 0) or 0
+            )
+            last_write_error = getattr(backend, "last_write_error", None)
+            daemon_alive = bool(
+                getattr(backend, "daemon_alive", True)
+            )
+    except Exception as e:
+        logger.debug("sync_status read failed for %s: %s", current_user, e)
+
+    return SyncStatus(
+        pending_paths=pending,
+        wal_entry_count=len(pending),
+        bucket=bucket,
+        write_failure_count=write_failure_count,
+        last_write_error=last_write_error,
+        daemon_alive=daemon_alive,
+    )
+
+
+@router.get("/memory/namespaces", response_model=NamespacesResponse)
+async def get_memory_namespaces(
+    include_items: bool = True,
+    items_limit: int = 50,
+    current_user: str = Depends(get_current_user),
+) -> NamespacesResponse:
+    """Read the 5 Phase J typed namespaces for the current user's twin.
+
+    Returns per-namespace counts + (optionally) the items themselves so
+    the desktop Memory panel can render typed views without making
+    five separate calls.
+
+    Notes:
+      * ``persona`` returns ``item_count == version_count`` because
+        every persona update IS a new version (no working file).
+      * ``items_limit`` caps each list (newest-or-recent-first) to keep
+        the response bounded.
+      * Errors when reading a namespace are isolated — a corrupt store
+        returns an empty list with a logged warning instead of failing
+        the whole request.
+    """
+    if items_limit <= 0 or items_limit > 500:
+        items_limit = 50
+
+    twin = await twin_manager.get_twin(current_user)
+
+    summaries: list[NamespaceSummary] = []
+    items: dict[str, list[dict]] = {}
+
+    # Layout matches the field names assigned in DigitalTwin._initialize.
+    # ``persona`` is special-cased below.
+    namespace_specs = [
+        ("episodes",  "episodes",      lambda s: [e.to_dict() for e in s.recent(limit=items_limit)] if hasattr(s, "recent") else [e.to_dict() for e in s.all()][-items_limit:]),
+        ("facts",     "facts",         lambda s: [f.to_dict() for f in s.all()][-items_limit:]),
+        ("skills",    "skills_memory", lambda s: [sk.to_dict() for sk in s.all()][-items_limit:]),
+        ("knowledge", "knowledge",     lambda s: [a.to_dict() for a in s.all()][-items_limit:]),
+    ]
+
+    for label, attr, lister in namespace_specs:
+        store = getattr(twin, attr, None)
+        if store is None:
+            continue
+        try:
+            all_items = lister(store)
+            history = store.history()
+            summaries.append(NamespaceSummary(
+                name=label,
+                item_count=len(store.all()),
+                current_version=store.current_version(),
+                version_count=len(history),
+            ))
+            if include_items:
+                items[label] = all_items
+        except Exception as e:  # noqa: BLE001
+            logger.warning("namespace %s read failed: %s", label, e)
+            summaries.append(NamespaceSummary(
+                name=label, item_count=0, current_version=None, version_count=0,
+            ))
+            if include_items:
+                items[label] = []
+
+    # Persona — every version IS a snapshot; "items" is the version
+    # history rendered as dicts so the UI can show a timeline.
+    persona = getattr(twin, "persona_store", None)
+    if persona is not None:
+        try:
+            history = persona.history()
+            current = persona.current()
+            summaries.append(NamespaceSummary(
+                name="persona",
+                item_count=len(history),
+                current_version=persona.current_version(),
+                version_count=len(history),
+            ))
+            if include_items:
+                items["persona"] = history[:items_limit]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("namespace persona read failed: %s", e)
+            summaries.append(NamespaceSummary(
+                name="persona", item_count=0, current_version=None, version_count=0,
+            ))
+            if include_items:
+                items["persona"] = []
+
+    return NamespacesResponse(namespaces=summaries, items=items)
+
+
+# ── Brain panel chain status (Phase D 续) ────────────────────────────
+
+
+class NamespaceChainStatus(BaseModel):
+    """Per-namespace on-chain mirror state.
+
+    ``status`` is one of:
+      * ``"local"`` — committed locally; not yet mirrored to Greenfield
+      * ``"mirrored"`` — Greenfield received the blob; the agent's
+        on-chain state_root has NOT been re-anchored since the last
+        commit (so chain readers will not yet see this version)
+      * ``"anchored"`` — ``last_anchor_at >= last_commit_at``; this
+        version is part of the on-chain state root
+    """
+    namespace: str
+    status: str
+    version: Optional[str] = None
+    last_commit_at: Optional[float] = None
+    last_anchor_at: Optional[float] = None
+    mirrored: bool = False
+
+
+class ChainHealthCard(BaseModel):
+    wal_queue_size: int = 0
+    daemon_alive: bool = True
+    last_daemon_ok: Optional[float] = None
+    greenfield_ready: bool = False
+    bsc_ready: bool = False
+
+
+class ChainStatusResponse(BaseModel):
+    """Brain panel's "is my data permanent?" data model.
+
+    Each of the 5 typed namespaces has a 3-state status; the
+    ``health`` card surfaces backend-level signals so the user can
+    distinguish "agent is busy mirroring" from "agent's chain
+    backend is broken".
+    """
+    namespaces: list[NamespaceChainStatus]
+    health: ChainHealthCard
+
+
+@router.get("/chain_status", response_model=ChainStatusResponse)
+async def get_chain_status(
+    current_user: str = Depends(get_current_user),
+) -> ChainStatusResponse:
+    """Brain panel: per-namespace mirror+anchor state + chain health.
+
+    Reads:
+      * ``store._versioned.chain_status(last_anchor_at)`` for each
+        of the 5 typed namespaces
+      * ``rune._backend.chain_health_snapshot()`` for the bottom
+        Chain Health card
+
+    Falls back to ``local`` for every namespace if the backend
+    isn't a chain-aware ChainBackend (e.g. local LocalBackend).
+    """
+    twin = await twin_manager.get_twin(current_user)
+    backend = getattr(twin.rune, "_backend", None)
+
+    last_anchor: Optional[float] = None
+    health_dict: dict = {
+        "wal_queue_size": 0, "daemon_alive": True,
+        "last_daemon_ok": None,
+        "greenfield_ready": False, "bsc_ready": False,
+    }
+    if backend is not None:
+        try:
+            last_anchor = backend.last_anchor_at(twin.config.agent_id)
+        except Exception:
+            last_anchor = None
+        try:
+            health_dict = backend.chain_health_snapshot()
+        except Exception:
+            pass
+
+    namespace_specs = [
+        ("persona",   "persona_store"),
+        ("knowledge", "knowledge"),
+        ("skills",    "skills_memory"),
+        ("facts",     "facts"),
+        ("episodes",  "episodes"),
+    ]
+
+    rows: list[NamespaceChainStatus] = []
+    for label, attr in namespace_specs:
+        store = getattr(twin, attr, None)
+        if store is None:
+            rows.append(NamespaceChainStatus(namespace=label, status="local"))
+            continue
+        # Reach into the underlying VersionedStore via the typed
+        # store's _versioned attribute (consistent across all 5).
+        versioned = getattr(store, "_versioned", None)
+        if versioned is None:
+            rows.append(NamespaceChainStatus(namespace=label, status="local"))
+            continue
+        try:
+            s = versioned.chain_status(last_anchor_at=last_anchor)
+            rows.append(NamespaceChainStatus(
+                namespace=label,
+                status=s["status"],
+                version=s.get("version"),
+                last_commit_at=s.get("last_commit_at"),
+                last_anchor_at=s.get("last_anchor_at"),
+                mirrored=bool(s.get("mirrored", False)),
+            ))
+        except Exception as e:
+            logger.warning("chain_status %s read failed: %s", label, e)
+            rows.append(NamespaceChainStatus(namespace=label, status="local"))
+
+    return ChainStatusResponse(
+        namespaces=rows,
+        health=ChainHealthCard(**health_dict),
+    )
+
+
+# ── Phase O.5: Evolution timeline (BEP-Nexus §3.4) ──────────────────
+
+
+class EvolutionEvent(BaseModel):
+    """One row of the evolution timeline.
+
+    ``kind`` is the EventLog event_type: "evolution_proposal" /
+    "evolution_verdict" / "evolution_revert". Clients render each
+    differently — proposals as pending edits, verdicts as outcomes,
+    reverts as red rollback markers.
+    """
+    index: int
+    timestamp: float
+    kind: str
+    edit_id: str
+    evolver: str = ""
+    target_namespace: str = ""
+    decision: Optional[str] = None       # only on verdicts
+    change_summary: str = ""
+    content: str = ""
+    metadata: dict
+
+
+class EvolutionTimelineResponse(BaseModel):
+    proposals: int
+    verdicts: int
+    reverts: int
+    events: list[EvolutionEvent]
+    pending: list[str]  # edit_ids with proposal but no verdict yet
+
+
+@router.get("/evolution/verdicts", response_model=EvolutionTimelineResponse)
+async def get_evolution_verdicts(
+    limit: int = 100,
+    current_user: str = Depends(get_current_user),
+) -> EvolutionTimelineResponse:
+    """Read the user's twin's falsifiable-evolution timeline.
+
+    Each Phase O.2 evolver run emits an ``evolution_proposal`` into
+    the EventLog before its write. After the proposal's window
+    elapses, Phase O.4's VerdictRunner (wired into the twin's
+    compaction loop in Phase O.5) writes back an
+    ``evolution_verdict`` and — when the decision is "reverted" —
+    an ``evolution_revert`` row plus a real namespace store rollback.
+
+    This endpoint surfaces all three event kinds so the desktop's
+    Evolution panel can render the timeline. ``pending`` lists the
+    edit_ids that have a proposal but no verdict yet — those are
+    the rows the UI marks as "in observation window".
+    """
+    if limit <= 0 or limit > 500:
+        limit = 100
+
+    twin = await twin_manager.get_twin(current_user)
+    event_log = getattr(twin, "event_log", None)
+    if event_log is None:
+        return EvolutionTimelineResponse(
+            proposals=0, verdicts=0, reverts=0, events=[], pending=[],
+        )
+
+    # Pull more than the limit so we can index proposal/verdict pairs
+    # before truncating. The full scan is bounded — twin event logs
+    # are local SQLite, this is cheap.
+    raw = event_log.recent(limit=max(limit * 4, 400))
+    raw = [e for e in raw if e.event_type in (
+        "evolution_proposal", "evolution_verdict", "evolution_revert",
+    )]
+    raw.sort(key=lambda e: e.index)
+
+    # Index settled edit_ids
+    settled: set[str] = set()
+    for e in raw:
+        if e.event_type == "evolution_verdict":
+            eid = (e.metadata or {}).get("edit_id")
+            if eid:
+                settled.add(eid)
+
+    proposal_ids: set[str] = set()
+    out: list[EvolutionEvent] = []
+    proposals = verdicts = reverts = 0
+    for e in raw:
+        md = e.metadata or {}
+        edit_id = md.get("edit_id", "")
+        kind = e.event_type
+        decision = None
+        if kind == "evolution_proposal":
+            proposals += 1
+            if edit_id:
+                proposal_ids.add(edit_id)
+        elif kind == "evolution_verdict":
+            verdicts += 1
+            decision = md.get("decision")
+        elif kind == "evolution_revert":
+            reverts += 1
+
+        out.append(EvolutionEvent(
+            index=e.index,
+            timestamp=e.timestamp,
+            kind=kind,
+            edit_id=edit_id,
+            evolver=md.get("evolver", ""),
+            target_namespace=md.get("target_namespace", ""),
+            decision=decision,
+            change_summary=md.get("change_summary", ""),
+            content=e.content,
+            metadata=md,
+        ))
+
+    # Newest first, then truncate to caller's limit.
+    out.sort(key=lambda x: x.index, reverse=True)
+    out = out[:limit]
+    pending = sorted(proposal_ids - settled)
+
+    return EvolutionTimelineResponse(
+        proposals=proposals,
+        verdicts=verdicts,
+        reverts=reverts,
+        events=out,
+        pending=pending,
+    )
+
+
+class EvolutionDecisionResult(BaseModel):
+    """Outcome of a manual approve / revert action."""
+    edit_id: str
+    decision: str                 # "kept" | "reverted"
+    rolled_back_from: str = ""
+    rolled_back_to: str = ""
+    target_namespace: str = ""
+    note: str = ""
+
+
+def _find_proposal(event_log, edit_id: str):
+    """Locate the proposal event whose metadata.edit_id matches.
+
+    Returns the EvolutionProposal dataclass + the raw Event row,
+    or (None, None) when no match. Searches recent events first
+    so the common case (just-emitted proposal) is fast.
+    """
+    from nexus.evolution.verdict_runner import _proposal_from_event
+
+    raw = event_log.recent(limit=500)
+    raw.sort(key=lambda e: e.index, reverse=True)
+    for e in raw:
+        if e.event_type != "evolution_proposal":
+            continue
+        if (e.metadata or {}).get("edit_id") == edit_id:
+            p = _proposal_from_event(e)
+            if p is not None:
+                return p, e
+    return None, None
+
+
+def _already_settled(event_log, edit_id: str) -> bool:
+    """True if any evolution_verdict / evolution_revert event already
+    exists for this edit_id — manual decisions are idempotent."""
+    raw = event_log.recent(limit=500)
+    for e in raw:
+        if e.event_type in ("evolution_verdict", "evolution_revert"):
+            if (e.metadata or {}).get("edit_id") == edit_id:
+                return True
+    return False
+
+
+def _resolve_store(twin, target_namespace: str):
+    """Map a proposal's target_namespace string → the live store on
+    the twin. Mirrors the wiring in VerdictRunner; kept local to
+    avoid coupling the endpoint to the runner's internals."""
+    mapping = {
+        "memory.persona": getattr(twin, "persona_store", None),
+        "memory.facts": getattr(twin, "facts", None),
+        "memory.episodes": getattr(twin, "episodes", None),
+        "memory.skills": getattr(twin, "skills_memory", None),
+        "memory.knowledge": getattr(twin, "knowledge", None),
+    }
+    return mapping.get(target_namespace)
+
+
+@router.post(
+    "/evolution/{edit_id}/revert",
+    response_model=EvolutionDecisionResult,
+)
+async def manual_revert_proposal(
+    edit_id: str,
+    current_user: str = Depends(get_current_user),
+) -> EvolutionDecisionResult:
+    """User-initiated rollback for a specific evolution proposal.
+
+    Bypasses the verdict window — the user has decided this edit
+    was bad, regardless of what the scorer would have said. Writes
+    an ``evolution_verdict`` (decision=reverted) followed by an
+    ``evolution_revert`` event with ``trigger="manual"``, and rolls
+    the namespace store back to the proposal's ``rollback_pointer``
+    when one is wired in. Idempotent — calling on an already-
+    settled proposal returns the prior decision without re-firing
+    side effects.
+    """
+    from fastapi import HTTPException
+    from nexus_core.evolution import (
+        EvolutionVerdict, EvolutionRevert,
+    )
+
+    twin = await twin_manager.get_twin(current_user)
+    event_log = getattr(twin, "event_log", None)
+    if event_log is None:
+        raise HTTPException(status_code=503, detail="twin event log unavailable")
+
+    proposal, _ = _find_proposal(event_log, edit_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail=f"no proposal for {edit_id!r}")
+
+    if _already_settled(event_log, edit_id):
+        return EvolutionDecisionResult(
+            edit_id=edit_id,
+            decision="reverted",
+            target_namespace=proposal.target_namespace,
+            note="already settled (idempotent)",
+        )
+
+    # 1. Write verdict event with manual reverted decision.
+    verdict = EvolutionVerdict(
+        edit_id=edit_id,
+        verdict_at_event=0,
+        events_observed=0,
+        decision="reverted",
+    )
+    event_log.append(
+        event_type="evolution_verdict",
+        content=f"manual revert for {edit_id}",
+        metadata=verdict.to_event_metadata(),
+    )
+
+    # 2. Try the actual rollback. Best-effort: log + record empty
+    # rolled_back_from when no store is wired in.
+    rolled_from = ""
+    rolled_to = proposal.rollback_pointer or ""
+    store = _resolve_store(twin, proposal.target_namespace)
+    if store is not None and rolled_to and rolled_to != "(uncommitted)":
+        try:
+            rolled_from = store.current_version() or ""
+            store.rollback(rolled_to)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "manual revert rollback failed for %s → %s: %s",
+                proposal.target_namespace, rolled_to, e,
+            )
+            rolled_from = ""
+
+    # 3. Write the revert event so the timeline endpoint shows
+    # the user-driven action.
+    revert = EvolutionRevert(
+        edit_id=edit_id,
+        rolled_back_to=rolled_to,
+        rolled_back_from=rolled_from,
+        trigger="manual",
+        evidence=f"user {current_user} requested revert",
+    )
+    event_log.append(
+        event_type="evolution_revert",
+        content=f"manual revert {edit_id}: {rolled_from} → {rolled_to}",
+        metadata=revert.to_event_metadata(),
+    )
+
+    return EvolutionDecisionResult(
+        edit_id=edit_id,
+        decision="reverted",
+        rolled_back_from=rolled_from,
+        rolled_back_to=rolled_to,
+        target_namespace=proposal.target_namespace,
+        note="manual revert applied",
+    )
+
+
+class ThinkingStep(BaseModel):
+    """One row of the agent's inner-monologue / thinking trace.
+
+    Synthesised from the twin's EventLog by filtering to the event
+    types that constitute a "thinking step" (vs storage churn or
+    chain anchoring). Each row carries a stable ``kind`` the UI uses
+    to pick an icon + label, plus the original event content.
+    """
+    sync_id: int
+    timestamp: str
+    kind: str           # "heard" | "checked" | "recalled" | "decided" |
+                        # "responded" | "violated" | "compacted" |
+                        # "evolving" | "evolved" | "reverted"
+    label: str
+    content: str
+    metadata: dict
+
+
+class ThinkingResponse(BaseModel):
+    steps: list[ThinkingStep]
+    total: int
+
+
+# Maps EventLog event_type → (UI kind, friendly label).
+# Anything not in this map is filtered out — the thinking panel is
+# deliberately narrow, only showing turns of the agent's reasoning
+# rather than every storage-side event.
+_THINKING_MAP: dict[str, tuple[str, str]] = {
+    "user_message":        ("heard",     "Heard the user say"),
+    "contract_check":      ("checked",   "Ran a safety check"),
+    "memory_compact":      ("compacted", "Compacted memory"),
+    "memory_extract":      ("recalled",  "Extracted memories from this turn"),
+    "memory_extracted":    ("recalled",  "Stored a memory"),
+    "memory_stored":       ("recalled",  "Stored a memory"),
+    "skill_learned":       ("decided",   "Learned a skill"),
+    "persona_evolved":     ("evolved",   "Evolved persona"),
+    "persona_reflect":     ("evolving",  "Reflecting on persona"),
+    "evolution_proposal":  ("evolving",  "Proposed an edit (pending verdict)"),
+    "evolution_verdict":   ("decided",   "Verdict on a recent edit"),
+    "evolution_revert":    ("reverted",  "Reverted a bad edit"),
+    "contract_violation":  ("violated",  "Caught a contract violation"),
+    "assistant_response":  ("responded", "Replied"),
+}
+
+
+# ── Phase C: Evolution Pressure dashboard ──────────────────────────
+
+
+class EvolutionPressureItem(BaseModel):
+    """One evolver's pressure gauge reading.
+
+    Mirrors the shape returned by each evolver's ``pressure_state()``
+    method (Phase C1 of the Pressure Dashboard). Renders directly in
+    the desktop's gauges segment of the cognition panel:
+
+      * ``accumulator / threshold`` → progress bar fill ratio
+      * ``status`` → idle | warming | ready | live | fired_recently
+      * ``fed_by`` → arrows in the lineage view drawn between layers
+      * ``details`` → free-form, evolver-specific extras the lineage
+        card may surface (e.g. per-topic SkillEvolver counters,
+        days_since for PersonaEvolver, current event count for
+        EventLogCompactor)
+    """
+    evolver: str
+    layer: str                          # "L0" / "L1" / "L2" / "L4"
+    accumulator: float
+    threshold: float
+    unit: str
+    status: str
+    fed_by: list[str]
+    last_fired_at: Optional[float] = None
+    details: dict = {}
+
+
+class EvolutionVerdictItem(BaseModel):
+    """One verdict event for the Pressure Dashboard's verdict feed.
+
+    Phase D 续 / #159: surface the kept-vs-reverted decision + the
+    verdict's reasoning (regression / drift) inline in the UI so
+    the user can see what the agent rejected and why.
+    """
+    edit_id: str
+    evolver: str
+    target_namespace: str
+    decision: str                       # "kept" | "reverted" | "(unknown)"
+    timestamp: float
+    regression_score: float = 0.0
+    abc_drift_delta: float = 0.0
+    evidence: str = ""
+    change_summary: str = ""
+
+
+class EvolutionPressureResponse(BaseModel):
+    """Aggregated pressure dashboard payload — one row per evolver
+    + a 24h evolution histogram so the UI can show the
+    "pyramid shape" of the agent's growth (slow at top, busy at
+    bottom).
+
+    ``histogram_24h`` is a dict keyed by evolver name; each value
+    is a 24-element list (one per hour, oldest first) of fire
+    counts. Allows a sparkline render without per-evolver round-
+    trips.
+
+    ``recent_verdicts`` is the last N verdict events (Phase D 续 /
+    #159), newest-first, for the dashboard's verdict feed.
+    """
+    evolvers: list[EvolutionPressureItem]
+    histogram_24h: dict[str, list[int]]
+    recent_verdicts: list[EvolutionVerdictItem] = []
+
+
+def _aggregate_evolution_histogram(event_log) -> dict[str, list[int]]:
+    """Bucket evolution_verdict events into 24 hourly buckets per
+    evolver. Cheap full-scan over the bounded recent window.
+
+    The histogram is intentionally rough — point of the
+    visualization is "shape" not exact counts."""
+    import time as _time
+    now = _time.time()
+    cutoff = now - 24 * 3600
+    out: dict[str, list[int]] = {}
+    try:
+        rows = event_log.recent(limit=1000)
+    except Exception:
+        return {}
+    for ev in rows:
+        if ev.event_type != "evolution_verdict":
+            continue
+        if ev.timestamp < cutoff:
+            continue
+        md = ev.metadata or {}
+        # The verdict event references its proposal — we look up
+        # the evolver from the matching proposal's metadata. If we
+        # can't resolve it (corrupt row, replay edge case), bucket
+        # under "Unknown" so the histogram still shows the firing.
+        evolver = ""
+        edit_id = md.get("edit_id")
+        if edit_id:
+            for prop in rows:
+                if (
+                    prop.event_type == "evolution_proposal"
+                    and (prop.metadata or {}).get("edit_id") == edit_id
+                ):
+                    evolver = (prop.metadata or {}).get("evolver", "") or ""
+                    break
+        evolver = evolver or "Unknown"
+        bucket_idx = int((ev.timestamp - cutoff) // 3600)
+        bucket_idx = max(0, min(23, bucket_idx))
+        if evolver not in out:
+            out[evolver] = [0] * 24
+        out[evolver][bucket_idx] += 1
+    return out
+
+
+def _aggregate_verdict_feed(event_log, limit: int = 10) -> list[EvolutionVerdictItem]:
+    """Pull the last N verdict events out of the EventLog, attach
+    each to its proposal so the UI shows what was being decided.
+
+    Returns newest-first.
+    """
+    try:
+        rows = event_log.recent(limit=500)
+    except Exception:
+        return []
+    rows = sorted(rows, key=lambda e: e.index)
+
+    proposals: dict[str, dict] = {}
+    for ev in rows:
+        if ev.event_type == "evolution_proposal":
+            md = ev.metadata or {}
+            edit_id = md.get("edit_id")
+            if edit_id:
+                proposals[edit_id] = md
+
+    out: list[EvolutionVerdictItem] = []
+    for ev in reversed(rows):  # newest first
+        if ev.event_type != "evolution_verdict":
+            continue
+        md = ev.metadata or {}
+        edit_id = md.get("edit_id", "") or ""
+        prop = proposals.get(edit_id, {})
+        out.append(EvolutionVerdictItem(
+            edit_id=edit_id,
+            evolver=prop.get("evolver", "") or md.get("evolver", "") or "",
+            target_namespace=prop.get("target_namespace", "") or "",
+            decision=md.get("decision", "(unknown)") or "(unknown)",
+            timestamp=float(ev.timestamp),
+            regression_score=float(md.get("regression_score", 0.0) or 0.0),
+            abc_drift_delta=float(md.get("abc_drift_delta", 0.0) or 0.0),
+            evidence=str(md.get("evidence", "") or "")[:500],
+            change_summary=str(prop.get("change_summary", "") or "")[:200],
+        ))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _count_facts_for_pressure(twin) -> int:
+    """Count facts currently visible to KnowledgeCompiler — uses
+    the same source it would on its own (CuratedMemory)."""
+    try:
+        return int(getattr(twin.curated_memory, "memory_count", 0) or 0)
+    except Exception:
+        return 0
+
+
+@router.get("/evolution/pressure", response_model=EvolutionPressureResponse)
+async def get_evolution_pressure(
+    current_user: str = Depends(get_current_user),
+) -> EvolutionPressureResponse:
+    """Snapshot of every evolver's accumulator + a 24h histogram.
+
+    Drives the desktop's Pressure Dashboard:
+      * **Gauges** — one progress bar per evolver, colour-coded by
+        layer; ``status`` decides idle/warming/ready styling.
+      * **Lineage** — arrows drawn from upstream evolvers (``fed_by``)
+        to the current one, so the user sees the causal chain.
+      * **Histogram** — 24h sparkline per evolver showing the
+        pyramid of evolution rates (L0 sparse, L1 busy).
+
+    Endpoint is meant to be polled every 5s — much slower cadence
+    than the per-2s Cognition stream because pressure changes
+    slowly. All work is local (in-process pressure_state calls +
+    a bounded EventLog scan), no Greenfield round-trips.
+    """
+    twin = await twin_manager.get_twin(current_user)
+    items: list[EvolutionPressureItem] = []
+
+    # Aliases for the evolution engine and its sub-evolvers.
+    engine = getattr(twin, "evolution", None)
+    memory = getattr(engine, "memory", None) if engine else None
+    skills = getattr(engine, "skills", None) if engine else None
+    persona = getattr(engine, "persona", None) if engine else None
+    knowledge = getattr(engine, "knowledge", None) if engine else None
+    compactor = getattr(twin, "_compactor", None)
+
+    def _safe_pressure(obj, *args, **kwargs):
+        try:
+            if obj is None or not hasattr(obj, "pressure_state"):
+                return None
+            return obj.pressure_state(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("pressure_state(%s) failed: %s", obj, e)
+            return None
+
+    # MemoryEvolver — live, fed by chat turns.
+    s = _safe_pressure(memory)
+    if s:
+        items.append(EvolutionPressureItem(**s))
+
+    # EventLogCompactor — accumulator = events since last compact.
+    s = _safe_pressure(compactor)
+    if s:
+        items.append(EvolutionPressureItem(**s))
+
+    # KnowledgeCompiler — accumulator = current fact count.
+    fact_count = _count_facts_for_pressure(twin)
+    s = _safe_pressure(
+        knowledge,
+        fact_count=fact_count,
+        min_memories=10,
+    )
+    if s:
+        items.append(EvolutionPressureItem(**s))
+
+    # SkillEvolver — per-topic accumulators rolled into one primary.
+    s = _safe_pressure(skills)
+    if s:
+        items.append(EvolutionPressureItem(**s))
+
+    # PersonaEvolver — drift + days-since dual trigger. Drift score
+    # comes from twin.drift if present; falls back to 0.
+    drift_score = 0.0
+    drift = getattr(twin, "drift", None)
+    if drift is not None:
+        try:
+            drift_score = float(getattr(drift, "current", 0.0) or 0.0)
+            if hasattr(drift, "drift_score") and callable(drift.drift_score):
+                drift_score = float(drift.drift_score() or drift_score)
+        except Exception:  # noqa: BLE001
+            drift_score = 0.0
+    s = _safe_pressure(
+        persona,
+        cadence_days=30.0,
+        drift_threshold=0.7,
+        drift_score=drift_score,
+    )
+    if s:
+        items.append(EvolutionPressureItem(**s))
+
+    # 24h histogram + recent verdict feed (Phase D 续 / #159).
+    histogram: dict[str, list[int]] = {}
+    verdicts: list[EvolutionVerdictItem] = []
+    event_log = getattr(twin, "event_log", None)
+    if event_log is not None:
+        histogram = _aggregate_evolution_histogram(event_log)
+        verdicts = _aggregate_verdict_feed(event_log, limit=10)
+
+    return EvolutionPressureResponse(
+        evolvers=items,
+        histogram_24h=histogram,
+        recent_verdicts=verdicts,
+    )
+
+
+# ── Brain panel: learning_summary (Phase D 续 / #159) ─────────────
+
+
+class TimelineDay(BaseModel):
+    """One day of learning activity for the Brain panel timeline."""
+    day: str                            # ISO date "YYYY-MM-DD"
+    facts: int = 0
+    skills: int = 0
+    knowledge: int = 0
+    persona: int = 0
+    episodes: int = 0
+
+
+class JustLearnedItem(BaseModel):
+    """One recent change across any namespace, for the Just Learned feed."""
+    kind: str                           # fact / skill / persona / knowledge / episode
+    content: str                        # short preview / title
+    category: str = ""                  # namespace-specific category if any
+    importance: int = 3
+    timestamp: float
+    version: Optional[str] = None
+    chain_status: str = "local"         # local | mirrored | anchored
+
+
+class DataFlowStage(BaseModel):
+    """One evolver's status for the Data Flow viz this turn."""
+    evolver: str
+    layer: str = ""
+    status: str = "live"                # live | warming | ready | fired_recently
+    accumulator: float = 0.0
+    threshold: float = 0.0
+    unit: str = ""
+    fed_by: list[str] = []
+    last_fired_at: Optional[float] = None
+
+
+class LearningSummaryResponse(BaseModel):
+    """Brain panel data: 7-day timeline + just-learned feed +
+    data-flow snapshot.
+
+    Polled every ~10s by the desktop Brain panel — much slower than
+    Cognition (per-2s) since this is summary data."""
+    window_days: int
+    timeline: list[TimelineDay]
+    just_learned: list[JustLearnedItem]
+    data_flow: list[DataFlowStage]
+
+
+def _bucket_by_day(events, window_days: int) -> dict[str, dict[str, int]]:
+    """Bucket evolution_proposal events by ISO day → namespace counts."""
+    import datetime as _dt
+    import time as _time
+    cutoff = _time.time() - window_days * 86400
+    out: dict[str, dict[str, int]] = {}
+    for ev in events:
+        if ev.event_type != "evolution_proposal":
+            continue
+        if ev.timestamp < cutoff:
+            continue
+        md = ev.metadata or {}
+        target = (md.get("target_namespace") or "").replace("memory.", "")
+        if target not in {"facts", "skills", "knowledge", "persona", "episodes"}:
+            continue
+        day = _dt.datetime.fromtimestamp(ev.timestamp).strftime("%Y-%m-%d")
+        out.setdefault(day, {}).setdefault(target, 0)
+        out[day][target] += 1
+    return out
+
+
+def _build_learning_timeline(events, window_days: int) -> list[TimelineDay]:
+    import datetime as _dt
+    bucket = _bucket_by_day(events, window_days)
+    today = _dt.datetime.now().date()
+    out: list[TimelineDay] = []
+    for delta in range(window_days - 1, -1, -1):
+        day = today - _dt.timedelta(days=delta)
+        key = day.strftime("%Y-%m-%d")
+        counts = bucket.get(key, {})
+        out.append(TimelineDay(
+            day=key,
+            facts=counts.get("facts", 0),
+            skills=counts.get("skills", 0),
+            knowledge=counts.get("knowledge", 0),
+            persona=counts.get("persona", 0),
+            episodes=counts.get("episodes", 0),
+        ))
+    return out
+
+
+def _classify_chain_status(versioned, last_anchor_at: Optional[float]) -> str:
+    """Returns 'local' | 'mirrored' | 'anchored' for a typed-store
+    version, mirroring VersionedStore.chain_status logic."""
+    if versioned is None:
+        return "local"
+    try:
+        s = versioned.chain_status(last_anchor_at=last_anchor_at)
+        return str(s.get("status", "local"))
+    except Exception:
+        return "local"
+
+
+def _build_just_learned(twin, last_anchor_at, limit: int = 12) -> list[JustLearnedItem]:
+    """Merge recent items across all 5 stores by timestamp, newest first."""
+    out: list[JustLearnedItem] = []
+
+    def _push(kind, content, category, importance, ts, version, versioned):
+        out.append(JustLearnedItem(
+            kind=kind,
+            content=str(content)[:200],
+            category=str(category)[:64],
+            importance=int(importance) if importance is not None else 3,
+            timestamp=float(ts) if ts else 0.0,
+            version=version,
+            chain_status=_classify_chain_status(versioned, last_anchor_at),
+        ))
+
+    facts = getattr(twin, "facts", None)
+    if facts is not None:
+        try:
+            for f in facts.all()[-limit:]:
+                _push(
+                    "fact", f.content, f.category, f.importance,
+                    f.created_at, facts.current_version(),
+                    getattr(facts, "_versioned", None),
+                )
+        except Exception:
+            pass
+
+    skills = getattr(twin, "skills_memory", None)
+    if skills is not None:
+        try:
+            for s in skills.all()[-limit:]:
+                preview = s.last_lesson or s.description or s.skill_name
+                _push(
+                    "skill", preview, s.skill_name, 3,
+                    getattr(s, "updated_at", 0.0),
+                    skills.current_version(),
+                    getattr(skills, "_versioned", None),
+                )
+        except Exception:
+            pass
+
+    knowledge = getattr(twin, "knowledge", None)
+    if knowledge is not None:
+        try:
+            for a in knowledge.all()[-limit:]:
+                _push(
+                    "knowledge", a.title, "article", 4,
+                    getattr(a, "updated_at", 0.0),
+                    knowledge.current_version(),
+                    getattr(knowledge, "_versioned", None),
+                )
+        except Exception:
+            pass
+
+    persona = getattr(twin, "persona_store", None)
+    if persona is not None:
+        try:
+            for entry in persona.history(limit=limit):
+                _push(
+                    "persona",
+                    entry.get("changes_summary") or entry.get("version_notes") or entry.get("version", ""),
+                    "version",
+                    5,
+                    entry.get("created_at", 0.0),
+                    entry.get("version"),
+                    getattr(persona, "_versioned", None),
+                )
+        except Exception:
+            pass
+
+    episodes = getattr(twin, "episodes", None)
+    if episodes is not None:
+        try:
+            ep_list = episodes.recent(limit=limit) if hasattr(episodes, "recent") else episodes.all()[-limit:]
+            for e in ep_list:
+                _push(
+                    "episode", getattr(e, "summary", "") or "(no summary)",
+                    "session", 2,
+                    getattr(e, "created_at", 0.0),
+                    episodes.current_version(),
+                    getattr(episodes, "_versioned", None),
+                )
+        except Exception:
+            pass
+
+    out.sort(key=lambda x: x.timestamp, reverse=True)
+    return out[:limit]
+
+
+def _build_data_flow(twin) -> list[DataFlowStage]:
+    """Snapshot of each evolver's current status — same data the
+    pressure dashboard surfaces, but flattened into the order the
+    Brain panel's data-flow viz draws (chat → facts → skills →
+    knowledge → persona)."""
+    engine = getattr(twin, "evolution", None)
+    if engine is None:
+        return []
+
+    def _safe(obj, *args, **kwargs):
+        try:
+            if obj is None or not hasattr(obj, "pressure_state"):
+                return None
+            return obj.pressure_state(*args, **kwargs)
+        except Exception:
+            return None
+
+    stages: list[DataFlowStage] = []
+
+    fact_count = _count_facts_for_pressure(twin)
+    drift_score = 0.0
+    drift = getattr(twin, "drift", None)
+    if drift is not None:
+        try:
+            drift_score = float(getattr(drift, "current", 0.0) or 0.0)
+        except Exception:
+            drift_score = 0.0
+
+    spec = [
+        ("MemoryEvolver",     getattr(engine, "memory", None),    {}),
+        ("SkillEvolver",      getattr(engine, "skills", None),    {}),
+        ("KnowledgeCompiler", getattr(engine, "knowledge", None), {"fact_count": fact_count, "min_memories": 10}),
+        ("PersonaEvolver",    getattr(engine, "persona", None),   {"cadence_days": 30.0, "drift_threshold": 0.7, "drift_score": drift_score}),
+    ]
+    for name, obj, kwargs in spec:
+        s = _safe(obj, **kwargs)
+        if s:
+            stages.append(DataFlowStage(
+                evolver=s.get("evolver", name),
+                layer=s.get("layer", ""),
+                status=s.get("status", "live"),
+                accumulator=float(s.get("accumulator", 0.0) or 0.0),
+                threshold=float(s.get("threshold", 0.0) or 0.0)
+                          if s.get("threshold") not in (None, float("inf")) else 0.0,
+                unit=s.get("unit", ""),
+                fed_by=list(s.get("fed_by", []) or []),
+                last_fired_at=s.get("last_fired_at"),
+            ))
+    return stages
+
+
+@router.get("/learning_summary", response_model=LearningSummaryResponse)
+async def get_learning_summary(
+    window: str = "7d",
+    current_user: str = Depends(get_current_user),
+) -> LearningSummaryResponse:
+    """Brain panel: timeline + just-learned feed + data flow.
+
+    ``window`` accepts ``"7d"`` (default) / ``"14d"`` / ``"30d"`` —
+    everything else falls back to 7. The timeline is one row per day
+    with 5 namespace counts; just_learned is a merged feed of recent
+    items across stores, newest first; data_flow is the same
+    per-evolver state the pressure dashboard uses, in pyramid order.
+    """
+    if window.endswith("d"):
+        try:
+            days = max(1, min(60, int(window[:-1])))
+        except ValueError:
+            days = 7
+    else:
+        days = 7
+
+    twin = await twin_manager.get_twin(current_user)
+
+    # Pull events once — both timeline and (eventually) drift use them.
+    event_log = getattr(twin, "event_log", None)
+    events = []
+    if event_log is not None:
+        try:
+            events = event_log.recent(limit=2000)
+        except Exception:
+            events = []
+
+    timeline = _build_learning_timeline(events, days)
+
+    # Resolve last_anchor_at once for chain_status in the feed.
+    backend = getattr(twin.rune, "_backend", None)
+    last_anchor: Optional[float] = None
+    if backend is not None:
+        try:
+            last_anchor = backend.last_anchor_at(twin.config.agent_id)
+        except Exception:
+            last_anchor = None
+
+    just_learned = _build_just_learned(twin, last_anchor, limit=12)
+    data_flow = _build_data_flow(twin)
+
+    return LearningSummaryResponse(
+        window_days=days,
+        timeline=timeline,
+        just_learned=just_learned,
+        data_flow=data_flow,
+    )
+
+
+@router.get("/thinking", response_model=ThinkingResponse)
+async def get_thinking_trace(
+    limit: int = 60,
+    since_sync_id: Optional[int] = None,
+    current_user: str = Depends(get_current_user),
+) -> ThinkingResponse:
+    """Read the agent's recent inner-monologue / thinking trace.
+
+    Surface a curated subset of the twin's EventLog as a stream of
+    "what the agent did and why" — the agent's reasoning made visible
+    to the user. Entries are newest-first.
+
+    The desktop client polls this while a chat is in progress so the
+    user sees the agent thinking out loud (memory recall, contract
+    checks, evolution proposals, tool decisions) instead of staring
+    at a spinner.
+
+    Args:
+        limit: max rows to return (1–200).
+        since_sync_id: pagination cursor — return only rows with
+            ``sync_id`` strictly greater than this. Lets the client
+            poll efficiently for new steps.
+    """
+    if limit <= 0 or limit > 200:
+        limit = 60
+
+    raw = twin_event_log.list_timeline_events(current_user, limit=limit * 2)
+    steps: list[ThinkingStep] = []
+    for row in raw:
+        et = row.get("event_type", "")
+        mapping = _THINKING_MAP.get(et)
+        if mapping is None:
+            continue
+        sid = int(row.get("sync_id", 0))
+        if since_sync_id is not None and sid <= since_sync_id:
+            continue
+        kind, label = mapping
+        steps.append(ThinkingStep(
+            sync_id=sid,
+            timestamp=row.get("timestamp", ""),
+            kind=kind,
+            label=label,
+            content=(row.get("content") or "")[:600],
+            metadata=row.get("metadata") or {},
+        ))
+        if len(steps) >= limit:
+            break
+
+    return ThinkingResponse(steps=steps, total=len(steps))
+
+
+@router.post(
+    "/evolution/{edit_id}/approve",
+    response_model=EvolutionDecisionResult,
+)
+async def manual_approve_proposal(
+    edit_id: str,
+    current_user: str = Depends(get_current_user),
+) -> EvolutionDecisionResult:
+    """User-initiated keep for a specific evolution proposal.
+
+    Skips the verdict window and pins the edit as approved. Writes
+    an ``evolution_verdict`` with decision=kept; no store-side
+    side effect (the working state already reflects the edit).
+    Idempotent.
+    """
+    from fastapi import HTTPException
+    from nexus_core.evolution import EvolutionVerdict
+
+    twin = await twin_manager.get_twin(current_user)
+    event_log = getattr(twin, "event_log", None)
+    if event_log is None:
+        raise HTTPException(status_code=503, detail="twin event log unavailable")
+
+    proposal, _ = _find_proposal(event_log, edit_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail=f"no proposal for {edit_id!r}")
+
+    if _already_settled(event_log, edit_id):
+        return EvolutionDecisionResult(
+            edit_id=edit_id,
+            decision="kept",
+            target_namespace=proposal.target_namespace,
+            note="already settled (idempotent)",
+        )
+
+    verdict = EvolutionVerdict(
+        edit_id=edit_id,
+        verdict_at_event=0,
+        events_observed=0,
+        decision="kept",
+    )
+    event_log.append(
+        event_type="evolution_verdict",
+        content=f"manual approve for {edit_id}",
+        metadata={
+            **verdict.to_event_metadata(),
+            "trigger": "manual",   # extra field for forward-compat
+            "approver": current_user,
+        },
+    )
+    return EvolutionDecisionResult(
+        edit_id=edit_id,
+        decision="kept",
+        target_namespace=proposal.target_namespace,
+        note="manual approve applied",
     )
 
 

@@ -1,5 +1,5 @@
 """
-Flush Policy & Write-Ahead Log — configurable write batching for Rune Protocol.
+Flush Policy & Write-Ahead Log — configurable write batching for Nexus.
 
 Three-layer write architecture:
   Layer 1 (Hot):  In-memory buffer + local WAL file    ← every event
@@ -161,6 +161,81 @@ class WriteAheadLog:
         if self._path.exists():
             self._path.write_text("")
         logger.debug("WAL truncated: %s", self._path)
+
+    def remove(self, predicate) -> int:
+        """Remove every WAL entry where ``predicate(entry)`` returns True.
+
+        Returns the count removed. Implementation: read full WAL,
+        filter, atomic-replace via temp file. Atomicity matters because
+        a crash mid-rewrite would otherwise lose every kept entry too.
+        Cost is O(N) per call — fine for the per-entry-on-success
+        pattern (~1 small WAL line / chat turn) but don't call this
+        in tight loops; if you need to drop many entries, batch via
+        a single predicate call.
+
+        Use cases:
+          * Per-entry remove on Greenfield PUT success — keeps the
+            WAL bounded during long sessions instead of growing
+            forever (it used to only get cleared on close()/replay).
+          * ``drop_session(session_id)`` for hard-delete: remove every
+            pending write under a session's prefix so a subsequent
+            replay doesn't re-create what we just deleted.
+        """
+        if not self._path.exists():
+            return 0
+        # Close any append fd so we can rewrite cleanly.
+        if self._fd is not None:
+            self._fd.close()
+            self._fd = None
+        kept: list[str] = []
+        removed = 0
+        with open(self._path, "r") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError:
+                    # Corrupt line — drop it (matches read_all's behaviour).
+                    continue
+                if predicate(entry):
+                    removed += 1
+                    continue
+                kept.append(stripped)
+
+        # Atomic rewrite via temp + rename so a crash in the middle
+        # leaves either the old WAL or the new one — never an empty
+        # one with all entries lost.
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        with open(tmp, "w") as f:
+            for line in kept:
+                f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self._path)
+        if removed:
+            logger.debug(
+                "WAL: removed %d entr(y/ies), %d remain", removed, len(kept),
+            )
+        return removed
+
+    def drop_session(self, session_id: str) -> int:
+        """Remove every pending write whose ``path`` references the
+        given session id. Used by hard-delete so a stale WAL replay
+        on next start can't resurrect data we've already wiped at
+        the agent layer.
+
+        Empty / falsey ``session_id`` is refused — same guard as
+        :meth:`EventLog.delete_session`.
+        """
+        if not session_id:
+            return 0
+        token = str(session_id)
+        return self.remove(
+            lambda e: token in str(e.get("path", ""))
+            or token == str(e.get("session_id", "")),
+        )
 
     def close(self) -> None:
         """Close the WAL file handle."""

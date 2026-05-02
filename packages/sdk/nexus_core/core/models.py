@@ -1,5 +1,5 @@
 """
-Rune Protocol — Framework-Agnostic Data Models.
+Nexus — Framework-Agnostic Data Models.
 
 These are the universal units of persistence. Framework adapters convert
 their native types (ADK Session, LangGraph StateSnapshot, CrewAI TaskOutput)
@@ -71,62 +71,8 @@ class Checkpoint:
         )
 
 
-@dataclass
-class MemoryEntry:
-    """
-    A framework-agnostic memory entry.
-
-    Represents a piece of long-term knowledge that persists across
-    sessions. Framework adapters convert their native memory types
-    (ADK MemoryEntry, LangGraph Store item, CrewAI Memory, etc.)
-    into these entries.
-    """
-
-    memory_id: str = ""
-    content: str = ""
-    agent_id: str = ""
-    user_id: str = ""
-    metadata: dict = field(default_factory=dict)
-    score: float = 0.0       # relevance score from search
-    created_at: float = 0.0
-    access_count: int = 0    # times returned by search()
-    last_accessed: float = 0.0  # timestamp of last search() hit
-
-    def __post_init__(self):
-        if not self.memory_id:
-            self.memory_id = str(uuid.uuid4())
-        if self.created_at == 0.0:
-            self.created_at = time.time()
-
-    def compact(self) -> "MemoryCompact":
-        """Return a lightweight summary (no full content)."""
-        preview = self.content[:80] + ("..." if len(self.content) > 80 else "")
-        return MemoryCompact(
-            memory_id=self.memory_id,
-            preview=preview,
-            category=self.metadata.get("category", ""),
-            importance=self.metadata.get("importance", 3),
-            score=self.score,
-            created_at=self.created_at,
-        )
-
-
-@dataclass
-class MemoryCompact:
-    """
-    Lightweight memory summary for progressive retrieval (Layer 1).
-
-    ~50-100 tokens per entry vs ~500+ for full MemoryEntry.
-    Used by search_compact() to return an index that LLMs can scan
-    efficiently, then selectively fetch full content via get_by_ids().
-    """
-
-    memory_id: str = ""
-    preview: str = ""        # first ~80 chars of content
-    category: str = ""       # preference, fact, decision_pattern, etc.
-    importance: int = 3      # 1-5
-    score: float = 0.0       # relevance score from search
-    created_at: float = 0.0
+# Phase D 续 #2: ``MemoryEntry`` and ``MemoryCompact`` were
+# deleted. Use ``Fact`` from ``nexus_core.memory.facts`` instead.
 
 
 @dataclass

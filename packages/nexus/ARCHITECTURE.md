@@ -1,10 +1,10 @@
-# Rune Nexus — Architecture
+# Nexus — Architecture
 
 ## Relationship to SDK
 
 ```
 ┌────────────────────────────────────────────────┐
-│  Rune Nexus (Intelligence Layer)               │
+│  Nexus (Intelligence Layer)               │
 │  DigitalTwin, LLM, Evolution, Projection       │
 ├────────────────────────────────────────────────┤
 │  BNBChain Agent SDK (Infrastructure Layer)     │

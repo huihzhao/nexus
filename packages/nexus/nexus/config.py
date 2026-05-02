@@ -28,6 +28,27 @@ class TwinConfig:
     max_memories_per_conversation: int = 5
     persona_evolution_enabled: bool = True
 
+    # ── Chat projection (Phase P) ──
+    # ``"single_call"`` (default) — one LLM call over the full event
+    # log, lossy-compaction style. Fast and cheap for short logs;
+    # quality degrades as the log grows.
+    # ``"rlm"`` — Recursive Language Model: load events as a REPL
+    # variable, root LLM writes code to slice / sub-call. Quality
+    # scales with log size at the cost of higher per-turn variance.
+    # See ``docs/design/recursive-projection.md``.
+    chat_projection_mode: str = "single_call"
+
+    # Fast-path: skip RLM and use single_call when the trajectory
+    # serialised to chars is below this threshold. RLM has overhead
+    # that doesn't pay off on short logs (per the paper, base LLM
+    # wins at small input sizes).
+    rlm_fastpath_char_threshold: int = 16_000
+
+    # Per-call ceilings for RLM chat projection.
+    rlm_max_iterations: int = 8
+    rlm_max_sub_calls: int = 15
+    rlm_timeout_seconds: float = 30.0
+
     # ── Persistence ──
     base_dir: str = ".nexus"
     use_chain: bool = False
@@ -62,7 +83,7 @@ class TwinConfig:
             )
 
 
-DEFAULT_PERSONA = """You are {name}, Rune Nexus, a self-evolving digital avatar of {owner}.
+DEFAULT_PERSONA = """You are {name}, Nexus, a self-evolving digital avatar of {owner}.
 
 ## Core Identity
 You are a persistent, self-evolving AI avatar. Unlike ordinary chatbots, you:

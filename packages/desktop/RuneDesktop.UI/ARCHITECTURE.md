@@ -1,4 +1,4 @@
-# Rune Protocol Desktop UI - Architecture
+# Nexus Desktop UI - Architecture
 
 ## Overview
 

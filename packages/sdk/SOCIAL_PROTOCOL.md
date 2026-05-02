@@ -565,12 +565,12 @@ class NetworkStats:
 ### 6.3 Updated Provider Architecture
 
 ```
-RuneProvider (Facade) — now bundles 5 providers:
-    rune.sessions       → RuneSessionProvider
-    rune.memory         → RuneMemoryProvider
-    rune.artifacts      → RuneArtifactProvider
-    rune.tasks          → RuneTaskProvider
-    rune.impressions    → RuneImpressionProvider    ← NEW
+AgentRuntime (Facade) — now bundles 5 providers:
+    runtime.sessions       → SessionProvider
+    runtime.memory         → MemoryProvider
+    runtime.artifacts      → ArtifactProvider
+    runtime.tasks          → TaskProvider
+    runtime.impressions    → ImpressionProvider    ← NEW
 ```
 
 ### 6.4 New Components (SDK Extensions)
@@ -597,7 +597,7 @@ contracts/
     SocialGraphAnchor.sol       # Impression scores + graph edges
 ```
 
-### 6.3 Integration with Rune Nexus (Digital Twin)
+### 6.3 Integration with Nexus (Digital Twin)
 
 ```python
 # In DigitalTwin — new social capabilities
@@ -639,7 +639,7 @@ New CLI commands:
 
 > *Inspired by [Autogenesis: A Self-Evolving Agent Protocol](https://arxiv.org/abs/2604.15034) (Zhang, 2026), which formalizes agent self-evolution as a two-layer architecture separating "what evolves" (Resource Substrate) from "how evolution occurs" (Self-Evolution Protocol Layer). We adapt their key ideas — evolvable resources, operator algebra, safety gating, and execution tracing — to the Rune SDK context, where evolution is persistent and on-chain.*
 
-The Social Protocol doesn't exist in isolation. For agents to gossip, form impressions, and evolve their social behavior, the SDK itself needs a formalized evolution framework. Currently, Rune Nexus does evolution through ad-hoc Evolvers (MemoryEvolver, SkillEvolver, PersonaEvolver). This works but has three gaps: no unified abstraction for "things that can evolve," no safety gating (every evolution is auto-committed), and no execution traces to ground reflection in data.
+The Social Protocol doesn't exist in isolation. For agents to gossip, form impressions, and evolve their social behavior, the SDK itself needs a formalized evolution framework. Currently, Nexus does evolution through ad-hoc Evolvers (MemoryEvolver, SkillEvolver, PersonaEvolver). This works but has three gaps: no unified abstraction for "things that can evolve," no safety gating (every evolution is auto-committed), and no execution traces to ground reflection in data.
 
 This section defines the SDK-level primitives that both the existing Nexus evolution system and the Social Protocol build on.
 
@@ -1104,6 +1104,6 @@ The endgame is this: every person has an AI agent that is a faithful digital rep
 - **Honest** — edges represent real compatibility, tested through gossip, not vanity metrics
 - **Sovereign** — stored on BNB Chain, owned by private key, portable across platforms
 - **Useful** — "find me someone who knows Tokyo dining and has similar taste" is a query this graph can answer
-- **Evolving** — as agents learn and grow (via Rune Nexus evolution), their social connections naturally shift
+- **Evolving** — as agents learn and grow (via Nexus evolution), their social connections naturally shift
 
 Traditional social networks ask: "Who do you want to follow?" Agent social networks answer a harder, more valuable question: **"Who would you actually get along with, and why?"**

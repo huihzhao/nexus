@@ -1,5 +1,5 @@
 """
-StateManager — unified interface to Rune Protocol's on-chain state layer.
+StateManager — unified interface to Nexus's on-chain state layer.
 
 Architecture mirrors three separate smart contracts on BSC:
 
@@ -130,7 +130,7 @@ class TaskRecord:
 
 class StateManager:
     """
-    Unified interface to Rune Protocol state layer.
+    Unified interface to Nexus state layer.
 
     Two modes:
       - "local" (Phase 1): File-based mock for development/testing

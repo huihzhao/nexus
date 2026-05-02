@@ -12,6 +12,29 @@ Two learning paths:
 Usage tracking:
   Each skill tracks times_used, success_count, failure_count for
   evaluation feedback and smart eviction.
+
+Phase D
+-------
+Single source of truth: ``skills_store`` (Phase J typed
+``SkillsStore``). The internal ``_skills_cache`` is now a
+denormalised projection rebuilt from the typed store on
+``_load_skills_unlocked``; it carries operational fields
+(evaluations / evolution_count / etc.) the Phase J schema doesn't
+own, but skill identity, strategy, lessons, and counters all live
+in the typed store.
+
+What got deleted (vs. pre-D):
+
+* the ``rune.artifacts.save("skills_registry.json", …)`` write
+  path. Typed-store ``commit()`` is the only durable write.
+* ``apply_rollback``. Verdict-driven typed-store rollbacks are
+  already visible to chat-time reads as soon as
+  ``_load_skills_unlocked`` rebuilds the cache.
+* ``_mirror_to_typed_store``. Upsert writes go straight to the
+  typed store now — there is no second source to mirror to.
+* ``skills_registry.json`` legacy artifact loading. Cold-start
+  hydrate reads from the typed store; chain-recovery reads
+  through ``skills_store.recover_from_chain()``.
 """
 
 from __future__ import annotations
@@ -21,10 +44,13 @@ import json
 import logging
 import re
 import time
+import uuid
 from collections import Counter
 from typing import Any, Optional
 
 from nexus_core import AgentRuntime
+from nexus_core.evolution import EvolutionProposal
+from nexus_core.memory import EventLog, LearnedSkill, SkillsStore
 from .memory_evolver import _robust_json_parse
 
 logger = logging.getLogger(__name__)
@@ -116,20 +142,55 @@ class SkillEvolver:
       2. learn_from_conversation()  — auto-detect skills from chat (LLM-driven)
     """
 
-    def __init__(self, rune: AgentRuntime, agent_id: str, llm_fn: Any):
+    def __init__(
+        self,
+        rune: AgentRuntime,
+        agent_id: str,
+        llm_fn: Any,
+        event_log: EventLog | None = None,
+        skills_store: SkillsStore | None = None,
+    ):
+        if skills_store is None:
+            # Phase D: typed store is the only path. Synthesise a
+            # scratch store under tempdir when the caller doesn't
+            # pass one (tests / standalone use). DigitalTwin always
+            # wires the real, chain-mirrored one in production.
+            import tempfile
+            from pathlib import Path
+            scratch = Path(tempfile.gettempdir()) / f"nexus-skills-scratch-{agent_id}"
+            scratch.mkdir(parents=True, exist_ok=True)
+            skills_store = SkillsStore(base_dir=scratch)
         self.rune = rune
         self.agent_id = agent_id
         self.llm_fn = llm_fn
+        # Denormalised projection of skills_store. Carries operational
+        # fields (evaluations / evolution_count / etc.) the Phase J
+        # schema doesn't own. Rebuilt from skills_store on every
+        # _load_skills_unlocked call so a verdict-driven rollback
+        # surfaces here automatically.
         self._skills_cache: dict[str, dict] = {}
-        # Topic frequency tracker: {"travel": 3, "coding": 5, ...}
+        # Topic frequency tracker: {"travel": 3, "coding": 5, ...}.
+        # Local-only ephemeral state — losing it on cold start just
+        # delays the next topic→skill promotion. Persisted to a
+        # sidecar file under skills_store.base_dir so a process
+        # restart picks up where we left off.
         self._topic_counts: dict[str, int] = {}
         # Threshold: after N occurrences of a topic, synthesize a skill
         self._topic_skill_threshold: int = 3
-        self._dirty: bool = False  # True when locally modified — triggers merge on load
-        self._lock = asyncio.Lock()  # Protects load/save from concurrent access
+        self._dirty: bool = False
+        self._lock = asyncio.Lock()
+        # Phase O.2: emit evolution_proposal before each learn / topic
+        # promotion. Optional — without it, SkillEvolver behaves
+        # exactly as it did pre-Phase O.
+        self.event_log = event_log
+        self.skills_store = skills_store
         # Skill names that are blocked from learning (e.g., names that conflict
         # with registered tools). Set by EvolutionEngine on init.
         self._blocked_names: set[str] = set()
+        # Lazy hydrate: defer reading the typed store until the first
+        # load_skills() call so test fixtures can still construct a
+        # SkillEvolver pointing at an empty store without I/O.
+        self._hydrated: bool = False
 
     # ── Progressive Disclosure (Level 0 / Level 1) ──────────────
 
@@ -256,49 +317,170 @@ class SkillEvolver:
             return await self._load_skills_unlocked()
 
     async def _load_skills_unlocked(self) -> dict[str, dict]:
-        try:
-            art = await self.rune.artifacts.load(
-                "skills_registry.json", agent_id=self.agent_id,
-            )
-            if art:
-                data = json.loads(art.data.decode())
-                remote_skills = data.get("skills", data) if isinstance(data, dict) else {}
-                remote_topics = data.get("_topic_counts", {}) if isinstance(data, dict) else {}
+        """Rebuild the in-memory projection from the typed store.
 
-                if self._dirty:
-                    # Merge: remote first, then local overwrites (local wins on conflict)
-                    merged = {**remote_skills}
-                    merged.update(self._skills_cache)  # local takes precedence
-                    self._skills_cache = merged
-                    # Topic counts: take the max of each
-                    for k, v in remote_topics.items():
-                        self._topic_counts[k] = max(self._topic_counts.get(k, 0), v)
-                    self._dirty = False  # Merge complete — state is now consistent
-                    logger.info(
-                        "Skills merged: %d remote + %d local → %d total",
-                        len(remote_skills), len(self._skills_cache) - len(remote_skills),
-                        len(self._skills_cache),
-                    )
-                else:
-                    self._skills_cache = remote_skills
-                    self._topic_counts = remote_topics
-        except Exception:
-            if not self._dirty:
-                self._skills_cache = {}
+        Called at startup, after typed-store rollbacks, and any time
+        the engine wants a fresh view. Carries forward operational
+        fields the Phase J schema doesn't own (evaluations,
+        evolution_count, version, last_used, times_used, lessons[])
+        from the previous in-memory projection so a refresh doesn't
+        wipe usage counters.
+        """
+        try:
+            typed_skills = list(self.skills_store.all())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("SkillsStore.all() failed: %s", e)
+            typed_skills = []
+
+        preserved = {n: dict(s) for n, s in self._skills_cache.items()}
+        new_cache: dict[str, dict] = {}
+        for ls in typed_skills:
+            old = preserved.get(ls.skill_name) or {}
+            # Convert the typed lessons[] (list of {lesson, success,
+            # timestamp}) into the legacy projection shape (list of
+            # {lesson, outcome, source, timestamp}). Preserve any
+            # extra dict shape the legacy cache had — old
+            # evaluations / evolution_count fields are kept.
+            typed_lessons = list(ls.lessons or [])
+            projected_lessons = old.get("lessons") or []
+            if typed_lessons:
+                projected_lessons = [
+                    {
+                        "lesson": l.get("lesson", ""),
+                        "outcome": "success" if l.get("success") else "failure",
+                        "source": l.get("source", "unknown"),
+                        "timestamp": l.get("timestamp", 0.0),
+                    }
+                    for l in typed_lessons[-10:]
+                ]
+            new_cache[ls.skill_name] = {
+                **old,
+                "name": ls.skill_name,
+                "description": ls.description,
+                "best_strategy": ls.strategy,
+                "procedure": ls.strategy,
+                "confidence": float(ls.confidence),
+                "tags": list(ls.tags),
+                "success_count": int(ls.success_count),
+                "failure_count": int(ls.failure_count),
+                "task_count": int(ls.success_count + ls.failure_count),
+                "times_used": int(ls.times_used),
+                "last_used": float(ls.last_used),
+                "lessons": projected_lessons,
+                "version": old.get("version", 1),
+                "last_lesson": ls.last_lesson,
+                "updated_at": ls.updated_at,
+                "created_at": ls.created_at,
+            }
+        self._skills_cache = new_cache
+
+        # Hydrate topic_counts from sidecar on first load.
+        if not self._hydrated:
+            self._topic_counts = self._read_topic_counts()
+            self._hydrated = True
+
+        self._dirty = False
         return self._skills_cache
 
+    def _topic_counts_path(self):
+        # Sidecar file inside skills_store base_dir. Local-only — not
+        # chain-mirrored: topic counts are ephemeral progress markers
+        # and reconstruct cheaply from chat history if lost.
+        from pathlib import Path
+        base = Path(self.skills_store.base_dir)
+        return base / "_topic_counts.json"
+
+    def _read_topic_counts(self) -> dict[str, int]:
+        p = self._topic_counts_path()
+        if not p.exists():
+            return {}
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return {str(k): int(v) for k, v in (data or {}).items()}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("topic_counts read failed: %s", e)
+            return {}
+
+    def _write_topic_counts(self) -> None:
+        p = self._topic_counts_path()
+        try:
+            tmp = p.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(self._topic_counts, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            tmp.replace(p)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("topic_counts write failed: %s", e)
+
     async def _save_skills_unlocked(self):
-        data = json.dumps({
-            "skills": {k: v for k, v in self._skills_cache.items() if not k.startswith("_")},
-            "_topic_counts": self._topic_counts,
-        }, indent=2, ensure_ascii=False)
-        await self.rune.artifacts.save(
-            filename="skills_registry.json",
-            data=data.encode(),
-            agent_id=self.agent_id,
-            content_type="application/json",
-            metadata={"type": "evolution_artifact", "subtype": "skills"},
+        """Persist the cache → typed store + commit a new version.
+
+        This replaces the old ``rune.artifacts.save`` write path.
+        Every dirty entry in the cache is upserted into the typed
+        store, then the store is committed (which triggers chain
+        mirroring via VersionedStore). Topic counts are persisted
+        to a local-only sidecar file.
+        """
+        for name, skill in self._skills_cache.items():
+            if name.startswith("_"):
+                continue
+            try:
+                self._upsert_to_typed_store(name, skill)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "skills_store.upsert failed for %s: %s", name, e,
+                )
+        try:
+            self.skills_store.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("skills_store.commit failed: %s", e)
+        self._write_topic_counts()
+
+    def _upsert_to_typed_store(self, skill_name: str, skill: dict) -> None:
+        """Project a cache entry into a :class:`LearnedSkill` and
+        upsert it into the typed store.
+
+        Inverse of the projection in ``_load_skills_unlocked``.
+        Preserves the operational counters that ``LearnedSkill``
+        owns (times_used, last_used, lessons[]).
+        """
+        confidence = float(skill.get("confidence", 0.5) or 0.0)
+        confidence = max(0.0, min(1.0, confidence))
+        tags = [str(t) for t in skill.get("tags", []) if t]
+        legacy_lessons = skill.get("lessons") or []
+        typed_lessons = []
+        for l in legacy_lessons[-10:]:
+            if not isinstance(l, dict):
+                continue
+            typed_lessons.append({
+                "lesson": l.get("lesson", "") or "",
+                "success": l.get("outcome", "success") in ("success", "pattern"),
+                "source": l.get("source", "unknown"),
+                "timestamp": l.get("timestamp", 0.0),
+            })
+        last_lesson = ""
+        if legacy_lessons and isinstance(legacy_lessons[-1], dict):
+            last_lesson = legacy_lessons[-1].get("lesson", "") or ""
+        learned = LearnedSkill(
+            skill_name=skill_name,
+            description=str(skill.get("description", "") or "")[:500],
+            strategy=str(
+                skill.get("best_strategy", "")
+                or skill.get("procedure", "")
+                or "",
+            )[:4000],
+            last_lesson=last_lesson[:500],
+            confidence=confidence,
+            success_count=int(skill.get("success_count", 0) or 0),
+            failure_count=int(skill.get("failure_count", 0) or 0),
+            times_used=int(skill.get("times_used", 0) or 0),
+            last_used=float(skill.get("last_used", 0.0) or 0.0),
+            lessons=typed_lessons,
+            task_kinds=[],
+            tags=tags,
         )
+        self.skills_store.upsert(learned)
 
     # ── Path 1: Explicit Task Learning ───────────────────────────
 
@@ -494,9 +676,88 @@ class SkillEvolver:
                 learned.append(topic_skill)
 
         if learned:
+            # Phase O.2: emit evolution_proposal BEFORE the durable
+            # save so the verdict scorer can correlate this batch's
+            # promotions with subsequent observed regressions.
+            edit_id = self._emit_proposal_for_learn(learned)
+            if edit_id:
+                for s in learned:
+                    s["evolution_edit_id"] = edit_id
             await self._save_skills_unlocked()
 
         return learned
+
+    def _emit_proposal_for_learn(self, learned: list[dict]) -> str:
+        """Emit an ``evolution_proposal`` event for this learn batch.
+
+        Mirrors the pattern in MemoryEvolver / PersonaEvolver:
+        opt-in (gated on ``self.event_log``), best-effort (failures
+        logged + returned ""), conservative empty predictions until
+        Phase O.4's task_kind classifier lands.
+        """
+        if self.event_log is None or not learned:
+            return ""
+        edit_id = str(uuid.uuid4())
+        target_pre = (
+            self.skills_store.current_version()
+            if self.skills_store is not None else ""
+        ) or "(uncommitted)"
+        change_diff = [
+            {
+                "op": "upsert",
+                "skill_name": s.get("skill_name", ""),
+                "source": s.get("source", "conversation"),
+                "preview": (s.get("description") or s.get("lesson") or "")[:80],
+            }
+            for s in learned
+        ]
+        # Phase C: distinguish skill-extraction batches (LLM detected
+        # implicit tasks) from topic-promotion batches (frequency
+        # threshold reached) so the lineage card can show "caused
+        # by 3 conversations about X" vs "extracted from a single
+        # conversation".
+        sources = {s.get("source", "conversation") for s in learned}
+        promoted = [
+            s for s in learned if s.get("source") == "topic_pattern"
+        ]
+        proposal = EvolutionProposal(
+            edit_id=edit_id,
+            evolver="SkillEvolver",
+            target_namespace="memory.skills",
+            target_version_pre=target_pre,
+            target_version_post=target_pre,  # working-state edit
+            change_summary=f"learn {len(learned)} skill(s) from conversation",
+            change_diff=change_diff,
+            evidence_summary="conversation skill detection",
+            rollback_pointer=target_pre,
+            predicted_fixes=[],
+            predicted_regressions=[],
+            triggered_by={
+                "trigger_reason": (
+                    "topic_threshold_reached" if promoted
+                    else "conversation_skill_detected"
+                ),
+                "counts": {
+                    "skills_learned": len(learned),
+                    "topic_promotions": len(promoted),
+                },
+                "sources": sorted(sources),
+                "topic_counts": dict(self._topic_counts),
+            },
+        )
+        try:
+            self.event_log.append(
+                event_type="evolution_proposal",
+                content=(
+                    f"SkillEvolver → memory.skills: "
+                    f"learn {len(learned)} skill(s)"
+                ),
+                metadata=proposal.to_event_metadata(),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("emit evolution_proposal (skills) failed: %s", e)
+            return ""
+        return edit_id
 
     def _accumulate_topics(self, signals: list[dict]) -> list[dict]:
         """
@@ -614,7 +875,13 @@ class SkillEvolver:
         skill["updated_at"] = time.time()
         self._dirty = True  # Mark as locally modified — background load will merge
 
-    # ── Legacy Query (backward compatible) ───────────────────────
+        # Phase D: write-through to typed store happens via the
+        # next ``_save_skills_unlocked()`` call. We don't upsert
+        # eagerly here because batched commits keep the typed
+        # store's version count from exploding (one commit per
+        # learn-batch instead of one per skill).
+
+    # ── Query (typed-store backed) ───────────────────────────────
 
     def get_strategy_from_cache(self, task_type: str) -> Optional[str]:
         """
@@ -641,6 +908,12 @@ class SkillEvolver:
                 return skill.get("best_strategy")
         return None
 
+    # Phase D removed apply_rollback. Verdict-driven typed-store
+    # rollback now propagates automatically: the engine calls
+    # _load_skills_unlocked() on its next read, which rebuilds the
+    # cache from skills_store.all() — and that already reflects the
+    # rolled-back active version.
+
     async def get_stats(self) -> dict:
         await self.load_skills()
         visible = {k: v for k, v in self._skills_cache.items() if not k.startswith("_")}
@@ -662,5 +935,62 @@ class SkillEvolver:
                     "has_procedure": bool(s.get("procedure")),
                 }
                 for name, s in visible.items()
+            },
+        }
+
+    # ── Phase C: Evolution Pressure dashboard ─────────────────────
+
+    def pressure_state(self) -> dict:
+        """Per-evolver state for the Pressure Dashboard.
+
+        SkillEvolver has TWO modes:
+          * conversation-driven (every turn ⇒ "live")
+          * topic-accumulator (per-topic counter → promotes to a
+            skill at threshold)
+
+        We surface a top-level "live" status (the conversation path
+        always runs) plus a ``details.topics`` breakdown so the UI
+        can render per-topic gauges side-by-side. The accumulator is
+        the **most-active topic's count** — gives the dashboard a
+        single number to draw a primary gauge with.
+        """
+        topics = dict(self._topic_counts)
+        # Pick the topic closest to (but not yet over) threshold for
+        # the headline gauge — that's what's "about to evolve".
+        threshold = max(1, self._topic_skill_threshold)
+        not_yet_promoted = {
+            t: c for t, c in topics.items()
+            if c < threshold and t not in self._skills_cache
+        }
+        primary_topic = max(
+            not_yet_promoted.items(),
+            key=lambda kv: kv[1],
+            default=("(none)", 0),
+        )
+        return {
+            "evolver": "SkillEvolver",
+            "layer": "L2",
+            "accumulator": float(primary_topic[1]),
+            "threshold": float(threshold),
+            "unit": "topic_count",
+            "status": "live",  # conversation path always runs
+            "fed_by": ["chat.turn"],
+            "last_fired_at": None,
+            "details": {
+                "primary_topic": primary_topic[0],
+                "topics": {
+                    t: {
+                        "count": c,
+                        "ready": c >= threshold,
+                        "promoted": t in self._skills_cache,
+                    }
+                    for t, c in topics.items()
+                },
+                "total_topics_tracked": len(topics),
+                "total_skills": len(
+                    {k: v for k, v in self._skills_cache.items()
+                     if not k.startswith("_")}
+                ),
+                "topic_threshold": threshold,
             },
         }

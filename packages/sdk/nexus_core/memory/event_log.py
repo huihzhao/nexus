@@ -195,6 +195,176 @@ class EventLog:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def delete_session(self, session_id: str) -> int:
+        """Hard-delete every event tagged with ``session_id``.
+
+        Returns the count of rows removed. Also clears the FTS rowid
+        entries for those rows so full-text search doesn't surface
+        zombies.
+
+        Caller responsibilities:
+          * Greenfield object copies (if any) — issue separate
+            object delete calls against the chain backend. This
+            method only touches the local SQLite event_log.
+          * BSC state-root anchors are immutable on chain. Existing
+            anchors will keep referencing hashes that were computed
+            when these rows were present; that's the honest record
+            of "session existed at block N, was deleted at block M".
+
+        Refuses to operate on an empty ``session_id`` — too easy to
+        mistake the empty string for a real id and wipe every legacy
+        (pre-multi-session) message.
+        """
+        if not session_id:
+            raise ValueError(
+                "delete_session refuses to operate on empty session_id; "
+                "pass an explicit id."
+            )
+        cur = self._conn.execute(
+            "SELECT idx FROM events WHERE session_id = ?", (session_id,),
+        )
+        idxs = [r[0] for r in cur.fetchall()]
+        if not idxs:
+            return 0
+        # Delete from FTS first (FTS rows are keyed by rowid). Chunk
+        # the IN-list so we don't blow the SQLite parameter cap.
+        for chunk_start in range(0, len(idxs), 500):
+            chunk = idxs[chunk_start: chunk_start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            self._conn.execute(
+                f"DELETE FROM events_fts WHERE rowid IN ({placeholders})",
+                chunk,
+            )
+        self._conn.execute(
+            "DELETE FROM events WHERE session_id = ?", (session_id,),
+        )
+        self._conn.commit()
+        logger.info(
+            "EventLog: deleted %d rows for session %s", len(idxs), session_id,
+        )
+        return len(idxs)
+
+    # ── Chain recovery (永生 story) ──────────────────────────────
+
+    def snapshot_path(self) -> str:
+        """Canonical Greenfield path for this agent's EventLog
+        snapshot. Used by ``snapshot_to`` (write) and
+        ``recover_from`` (read) so they're guaranteed consistent.
+
+        Convention: ``agents/<agent_id>/event_log/snapshot.json``.
+        Each snapshot supersedes the previous one (we keep latest
+        only — version history is implicit in the per-event
+        ChainBackend WAL + state-root anchors).
+        """
+        safe = self._agent_id.replace("/", "_").replace("\\", "_")
+        return f"agents/{safe}/event_log/snapshot.json"
+
+    async def snapshot_to(self, chain_backend) -> dict:
+        """Dump the full event log to Greenfield as a single JSON
+        snapshot. Returns the snapshot dict (so tests can assert on
+        shape).
+
+        Why a full snapshot rather than per-event blobs:
+          * EventLog is append-only — replaying an old snapshot +
+            new tail is the same as replaying the latest snapshot.
+          * One JSON read on cold start ≪ N round-trips.
+          * For a 10000-event log at ~0.5KB each, snapshot ≈ 5MB —
+            still reasonable for Greenfield.
+
+        Trigger cadence is the caller's choice (typical: every
+        ``memory_compact`` event, since that's a natural quiescent
+        moment). Best-effort: if Greenfield is unreachable, the
+        ChainBackend WAL keeps the bytes for the next attempt.
+        """
+        rows = self._conn.execute(
+            "SELECT idx, timestamp, event_type, content, metadata, "
+            "agent_id, session_id FROM events ORDER BY idx ASC"
+        ).fetchall()
+        events = [
+            {
+                "idx": r[0],
+                "timestamp": r[1],
+                "event_type": r[2],
+                "content": r[3],
+                "metadata": r[4],  # already JSON-encoded text
+                "agent_id": r[5],
+                "session_id": r[6],
+            }
+            for r in rows
+        ]
+        snapshot = {
+            "schema": "nexus.event_log.snapshot.v1",
+            "agent_id": self._agent_id,
+            "event_count": len(events),
+            "events": events,
+        }
+        path = self.snapshot_path()
+        await chain_backend.store_json(path, snapshot)
+        logger.info(
+            "EventLog snapshot written: %d events at %s",
+            len(events), path,
+        )
+        return snapshot
+
+    async def recover_from(self, chain_backend) -> int:
+        """Re-populate this (empty) EventLog from a Greenfield
+        snapshot. Returns the number of events restored.
+
+        Usage: call once at twin startup if ``count() == 0``. Idempotent
+        in the sense that calling on a non-empty log is a no-op (we
+        refuse to interleave snapshot rows with newer local writes
+        — the snapshot is for cold-start recovery only).
+
+        Returns 0 when:
+          * snapshot doesn't exist on chain (genuinely brand-new agent)
+          * local log already has rows (no-op safety)
+        """
+        if self.count() > 0:
+            logger.debug(
+                "EventLog.recover_from: skipping — local log already "
+                "has %d events", self.count(),
+            )
+            return 0
+        path = self.snapshot_path()
+        snapshot = await chain_backend.load_json(path)
+        if not snapshot:
+            return 0
+        events = snapshot.get("events") or []
+        if not events:
+            return 0
+        # Bulk insert. We preserve the original idx values via
+        # explicit IDs so cross-references (e.g. evolution_proposal
+        # event ids) stay valid after recovery.
+        inserted = 0
+        for e in events:
+            try:
+                self._conn.execute(
+                    "INSERT INTO events "
+                    "(idx, timestamp, event_type, content, metadata, "
+                    " agent_id, session_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        e.get("idx"),
+                        float(e.get("timestamp", 0.0)),
+                        e.get("event_type", "unknown"),
+                        e.get("content", ""),
+                        e.get("metadata", "{}"),
+                        e.get("agent_id", self._agent_id),
+                        e.get("session_id", ""),
+                    ),
+                )
+                inserted += 1
+            except Exception as ex:  # noqa: BLE001
+                logger.warning(
+                    "EventLog.recover_from: skipping bad row idx=%s: %s",
+                    e.get("idx"), ex,
+                )
+        self._conn.commit()
+        logger.info(
+            "EventLog recovered: %d/%d events from %s",
+            inserted, len(events), path,
+        )
+        return inserted
+
     def close(self) -> None:
         """Close the database connection."""
         if self._conn:

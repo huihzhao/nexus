@@ -136,26 +136,41 @@ public partial class LoginViewModel : ObservableObject
                 return;
             }
 
-            // Set token and create profile from JWT claims
+            // Set token, then fetch the real profile from the server.
+            // The JWT alone doesn't carry display_name; we have to GET
+            // /api/v1/user/profile to populate the top-bar pill with
+            // the user's actual handle.
             _api.SetBearerToken(token);
-            // The passkey-page login flow doesn't surface a name input
-            // anymore, so DisplayName is typically empty here. `??` ONLY
-            // catches null — empty string slips through. Treat both
-            // null and whitespace as "no name provided" and fall back
-            // to a sensible default.
-            var nameForProfile = string.IsNullOrWhiteSpace(DisplayName)
-                ? "Passkey User"
-                : DisplayName!;
-            // Round 2-C: we used to decode the JWT here to derive
-            // ``userId`` and scope the desktop's LocalEventLog to a
-            // per-user SQLite path. After the thin-client refactor
-            // the desktop holds no on-disk per-user state — server
-            // verifies the JWT properly and scopes everything itself.
-            // ``AgentId`` is left empty and is no longer consumed by
-            // any view model.
+
+            var serverProfile = await _api.GetUserProfileAsync();
+            string nameForProfile;
+            string userId;
+            if (serverProfile is not null
+                && !string.IsNullOrWhiteSpace(serverProfile.DisplayName))
+            {
+                nameForProfile = serverProfile.DisplayName;
+                userId = serverProfile.UserId;
+            }
+            else if (!string.IsNullOrWhiteSpace(DisplayName))
+            {
+                // The user typed a name into the optional input — use it
+                // and accept the empty user_id (the chip will hide the
+                // short-id line gracefully).
+                nameForProfile = DisplayName!;
+                userId = "";
+            }
+            else
+            {
+                // Last-resort fallback. The Cognition panel's workdir
+                // call still fetches the real user_id from /agent/state
+                // so this only affects the top-bar display.
+                nameForProfile = "Nexus User";
+                userId = "";
+            }
+
             var profile = new AgentProfile
             {
-                AgentId = "",
+                AgentId = userId,
                 Name = nameForProfile,
                 Erc8004TokenId = "pending",
                 Network = "local",

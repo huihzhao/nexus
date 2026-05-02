@@ -9,9 +9,14 @@ Benefits:
   - More useful for retrieval (structured knowledge > scattered fragments)
   - Higher value on-chain (verifiable knowledge graph, not just raw observations)
 
-Storage:
-  Articles are stored as versioned Rune Artifacts (knowledge_articles.json).
-  Each compilation creates a new version with change notes.
+Storage (Phase D)
+-----------------
+Articles live in the typed Phase J ``KnowledgeStore`` (single
+source of truth). The internal ``_articles`` dict is now a
+denormalised projection rebuilt from the typed store on every
+``load_articles`` call; ``rune.artifacts.save("knowledge_articles.json", …)``
+is gone, ``apply_rollback`` is gone, and there is no second
+artifact to keep in sync.
 """
 
 from __future__ import annotations
@@ -20,9 +25,12 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any, Optional
 
 from nexus_core import AgentRuntime
+from nexus_core.evolution import EvolutionProposal
+from nexus_core.memory import EventLog, FactsStore, KnowledgeArticle, KnowledgeStore
 from .memory_evolver import _robust_json_parse
 
 logger = logging.getLogger(__name__)
@@ -88,69 +96,107 @@ class KnowledgeCompiler:
     verifiable knowledge graph on-chain.
     """
 
-    def __init__(self, rune: AgentRuntime, agent_id: str, llm_fn: Any):
+    def __init__(
+        self,
+        rune: AgentRuntime,
+        agent_id: str,
+        llm_fn: Any,
+        event_log: "EventLog | None" = None,
+        knowledge_store: "KnowledgeStore | None" = None,
+        facts_store: "FactsStore | None" = None,
+    ):
+        if knowledge_store is None:
+            # Phase D: typed store is the only path. Synthesise a
+            # scratch store under tempdir when the caller doesn't
+            # pass one (tests / standalone use). DigitalTwin always
+            # wires the real, chain-mirrored one in production.
+            import tempfile, uuid as _uuid
+            from pathlib import Path
+            scratch = (
+                Path(tempfile.gettempdir())
+                / f"nexus-knowledge-scratch-{agent_id}-{_uuid.uuid4().hex[:8]}"
+            )
+            scratch.mkdir(parents=True, exist_ok=True)
+            knowledge_store = KnowledgeStore(base_dir=scratch)
+        if facts_store is None:
+            # Phase D 续: KnowledgeCompiler reads facts as input for
+            # clustering. Auto-synthesise a scratch FactsStore so
+            # tests can construct without wiring (DigitalTwin wires
+            # the real one in production).
+            import tempfile, uuid as _uuid
+            from pathlib import Path
+            scratch = (
+                Path(tempfile.gettempdir())
+                / f"nexus-kn-facts-scratch-{agent_id}-{_uuid.uuid4().hex[:8]}"
+            )
+            scratch.mkdir(parents=True, exist_ok=True)
+            facts_store = FactsStore(base_dir=scratch)
         self.rune = rune
         self.agent_id = agent_id
         self.llm_fn = llm_fn
+        # Denormalised projection of knowledge_store. Rebuilt from
+        # the typed store on each load_articles call so a verdict-
+        # driven rollback surfaces here automatically.
         self._articles: dict[str, dict] = {}
         self._last_compiled_at: float = 0.0
         self._compilation_count: int = 0
-        self._dirty: bool = False  # True when locally modified — triggers merge on load
-        self._lock = asyncio.Lock()  # Protects load/save from concurrent access
+        self._dirty: bool = False
+        self._lock = asyncio.Lock()
+        # Phase O.2: emit evolution_proposal once per compile() call
+        # that actually produced new/updated articles. Optional —
+        # without it, KnowledgeCompiler behaves exactly as it did
+        # pre-Phase O.
+        self.event_log = event_log
+        self.knowledge_store = knowledge_store
+        self.facts_store = facts_store
 
     async def load_articles(self) -> dict[str, dict]:
-        """Load existing knowledge articles from storage."""
+        """Rebuild the in-memory projection from the typed store."""
         try:
-            art = await self.rune.artifacts.load(
-                "knowledge_articles.json", agent_id=self.agent_id,
-            )
-            if art:
-                data = json.loads(art.data.decode())
-                remote_articles = data.get("articles", {})
-                remote_count = data.get("compilation_count", 0)
-                remote_time = data.get("last_compiled_at", 0.0)
-
-                if self._dirty:
-                    # Merge: remote first, then local overwrites (local wins on conflict)
-                    merged = {**remote_articles}
-                    merged.update(self._articles)  # local takes precedence
-                    self._articles = merged
-                    self._compilation_count = max(self._compilation_count, remote_count)
-                    self._last_compiled_at = max(self._last_compiled_at, remote_time)
-                    self._dirty = False  # Merge complete — state is now consistent
-                    logger.info(
-                        "Knowledge merged: %d remote + %d local → %d total",
-                        len(remote_articles), len(self._articles) - len(remote_articles),
-                        len(self._articles),
-                    )
-                else:
-                    self._articles = remote_articles
-                    self._compilation_count = remote_count
-                    self._last_compiled_at = remote_time
-        except Exception:
-            if not self._dirty:
-                self._articles = {}
+            typed_articles = list(self.knowledge_store.all())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("KnowledgeStore.all() failed: %s", e)
+            typed_articles = []
+        new_articles: dict[str, dict] = {}
+        for art in typed_articles:
+            key = art.title or art.article_id
+            new_articles[key] = {
+                "article_id": art.article_id,
+                "title": art.title,
+                "summary": art.summary,
+                "content": art.content,
+                "key_facts": list(art.key_facts),
+                "tags": list(art.tags),
+                "source_fact_keys": list(art.source_fact_keys),
+                "source_episode_ids": list(art.source_episode_ids),
+                "confidence": float(art.confidence),
+                "visibility": art.visibility,
+                "updated_at": float(art.updated_at),
+                "created_at": float(art.created_at),
+            }
+        self._articles = new_articles
+        self._dirty = False
         return self._articles
 
     async def _save_articles(self):
-        """Persist knowledge articles as a versioned artifact."""
-        data = json.dumps({
-            "articles": self._articles,
-            "compilation_count": self._compilation_count,
-            "last_compiled_at": self._last_compiled_at,
-            "article_count": len(self._articles),
-        }, indent=2, ensure_ascii=False)
-        await self.rune.artifacts.save(
-            filename="knowledge_articles.json",
-            data=data.encode(),
-            agent_id=self.agent_id,
-            content_type="application/json",
-            metadata={
-                "type": "evolution_artifact",
-                "subtype": "knowledge_base",
-                "compilation": self._compilation_count,
-            },
-        )
+        """Persist projection → typed store + commit a new version.
+
+        Replaces the old ``rune.artifacts.save`` write path.
+        Iterates the in-memory projection, upserts each entry into
+        the typed store, then commits (which triggers chain
+        mirroring via VersionedStore).
+        """
+        for topic, article in self._articles.items():
+            try:
+                self._upsert_to_typed_store(topic, article)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "knowledge_store.upsert failed for %r: %s", topic, e,
+                )
+        try:
+            self.knowledge_store.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("knowledge_store.commit failed: %s", e)
 
     async def compile(self, min_memories: int = 10) -> dict:
         """
@@ -168,20 +214,19 @@ class KnowledgeCompiler:
         """
         await self.load_articles()
 
-        # ── 1. Load all raw memories ──
-        all_memories = await self.rune.memory.list_all(self.agent_id)
-        if len(all_memories) < min_memories:
+        # ── 1. Load all raw facts (Phase D 续) ──
+        all_facts = self.facts_store.all()
+        if len(all_facts) < min_memories:
             return {
                 "status": "skipped",
-                "reason": f"Only {len(all_memories)} memories (need {min_memories})",
+                "reason": f"Only {len(all_facts)} facts (need {min_memories})",
                 "articles_count": len(self._articles),
             }
 
-        memory_texts = []
-        for m in all_memories:
-            cat = m.metadata.get("category", "")
-            imp = m.metadata.get("importance", 3)
-            memory_texts.append(f"[{cat}, importance={imp}] {m.content}")
+        memory_texts = [
+            f"[{f.category}, importance={f.importance}] {f.content}"
+            for f in all_facts
+        ]
 
         # ── 2. Cluster memories by topic ──
         clusters = await self._cluster_memories(memory_texts)
@@ -228,7 +273,19 @@ class KnowledgeCompiler:
 
         self._dirty = True  # Mark as locally modified — background load will merge
 
+        # Phase O.2: emit evolution_proposal BEFORE the durable save.
+        # KnowledgeCompiler operates batch-style — one proposal per
+        # compile() run that produced new/updated articles, with the
+        # diff capturing the topic-level changes.
+        edit_id = self._emit_proposal_for_compile(
+            new_articles=new_articles,
+            updated_articles=updated_articles,
+        )
+
         # ── 4. Persist ──
+        # Phase D: ``_save_articles`` writes the projection through
+        # to the typed store and commits. The legacy artifact path
+        # is gone — typed store is the single source of truth.
         self._compilation_count += 1
         self._last_compiled_at = time.time()
         await self._save_articles()
@@ -236,11 +293,12 @@ class KnowledgeCompiler:
         result = {
             "status": "compiled",
             "compilation": self._compilation_count,
-            "total_memories": len(all_memories),
+            "total_memories": len(all_facts),
             "clusters_found": len(clusters),
             "new_articles": new_articles,
             "updated_articles": updated_articles,
             "total_articles": len(self._articles),
+            "evolution_edit_id": edit_id,
         }
 
         logger.info(
@@ -249,6 +307,158 @@ class KnowledgeCompiler:
             f"{len(self._articles)} total articles"
         )
         return result
+
+    # ── Phase C: Evolution Pressure dashboard ─────────────────────
+
+    def pressure_state(self, fact_count: int = 0, min_memories: int = 10) -> dict:
+        """Per-evolver state for the Pressure Dashboard.
+
+        KnowledgeCompiler fires when accumulated facts ≥
+        ``min_memories`` (default 10). Caller passes the current
+        ``fact_count`` (read from FactsStore / CuratedMemory) since
+        the compiler doesn't own that store directly.
+        """
+        if min_memories <= 0:
+            min_memories = 10
+        accumulator = float(fact_count)
+        threshold = float(min_memories)
+        if accumulator >= threshold:
+            status = "ready"
+        elif accumulator >= threshold * 0.9:
+            status = "warming"
+        elif self._compilation_count > 0 and self._last_compiled_at > 0:
+            status = "fired_recently" if (
+                # Within last 5 min counts as "just fired"
+                _now := __import__("time").time()
+            ) - self._last_compiled_at < 300 else "warming"
+        else:
+            status = "warming"
+        return {
+            "evolver": "KnowledgeCompiler",
+            "layer": "L1",
+            "accumulator": accumulator,
+            "threshold": threshold,
+            "unit": "facts",
+            "status": status,
+            "fed_by": ["MemoryEvolver"],
+            "last_fired_at": self._last_compiled_at or None,
+            "details": {
+                "compilation_count": self._compilation_count,
+                "current_articles": len(self._articles),
+                "min_memories": min_memories,
+            },
+        }
+
+    def _emit_proposal_for_compile(
+        self,
+        *,
+        new_articles: list[str],
+        updated_articles: list[str],
+    ) -> str:
+        """Emit an ``evolution_proposal`` event for this compile batch.
+
+        Same opt-in / best-effort pattern as MemoryEvolver /
+        SkillEvolver / PersonaEvolver. KnowledgeCompiler operates at
+        the article level, so the diff lists topics rather than full
+        content (full content lives in KnowledgeStore version chain
+        + the artifact store).
+        """
+        if self.event_log is None or (not new_articles and not updated_articles):
+            return ""
+        edit_id = str(uuid.uuid4())
+        target_pre = (
+            self.knowledge_store.current_version()
+            if self.knowledge_store is not None else ""
+        ) or "(uncommitted)"
+        change_diff = (
+            [{"op": "add", "topic": t} for t in new_articles] +
+            [{"op": "update", "topic": t} for t in updated_articles]
+        )
+        proposal = EvolutionProposal(
+            edit_id=edit_id,
+            evolver="KnowledgeCompiler",
+            target_namespace="memory.knowledge",
+            target_version_pre=target_pre,
+            target_version_post=target_pre,  # working-state edit
+            change_summary=(
+                f"compile: +{len(new_articles)} new, "
+                f"~{len(updated_articles)} updated"
+            ),
+            change_diff=change_diff,
+            evidence_summary=f"compilation round #{self._compilation_count + 1}",
+            rollback_pointer=target_pre,
+            predicted_fixes=[],
+            predicted_regressions=[],
+            # Phase C: KnowledgeCompiler is fed by the FactsStore.
+            # Lineage card uses these counts to render
+            # "caused by N facts → N+M articles".
+            triggered_by={
+                "trigger_reason": "fact_threshold_reached",
+                "counts": {
+                    "new_articles": len(new_articles),
+                    "updated_articles": len(updated_articles),
+                },
+                "compilation_round": self._compilation_count + 1,
+            },
+        )
+        try:
+            self.event_log.append(
+                event_type="evolution_proposal",
+                content=(
+                    f"KnowledgeCompiler → memory.knowledge: "
+                    f"+{len(new_articles)} new, ~{len(updated_articles)} updated"
+                ),
+                metadata=proposal.to_event_metadata(),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("emit evolution_proposal (knowledge) failed: %s", e)
+            return ""
+        return edit_id
+
+    def _upsert_to_typed_store(self, topic: str, legacy: dict) -> None:
+        """Project a single in-memory article into a typed
+        :class:`KnowledgeArticle` and upsert it.
+
+        Article id stability comes from looking up the existing
+        typed row by title before upserting; this lets a retry on
+        ``compile()`` produce the same article_id.
+        """
+        existing_id = legacy.get("article_id")
+        if not existing_id:
+            try:
+                for ka in self.knowledge_store.all():
+                    if ka.title and ka.title == legacy.get("title", topic):
+                        existing_id = ka.article_id
+                        break
+            except Exception:  # noqa: BLE001
+                existing_id = None
+        article = KnowledgeArticle(
+            article_id=existing_id or str(uuid.uuid4()),
+            title=str(legacy.get("title") or topic)[:200],
+            summary=str(legacy.get("summary", ""))[:1000],
+            content=str(legacy.get("content", "")),
+            key_facts=[
+                str(f) for f in (legacy.get("key_facts") or []) if f
+            ],
+            tags=[
+                str(t) for t in (legacy.get("tags") or []) if t
+            ],
+            source_fact_keys=[
+                str(k) for k in (legacy.get("source_fact_keys") or []) if k
+            ],
+            source_episode_ids=[
+                str(i) for i in (legacy.get("source_episode_ids") or []) if i
+            ],
+            confidence=max(
+                0.0, min(1.0, float(legacy.get("confidence", 0.5) or 0.0)),
+            ),
+            visibility=(
+                legacy.get("visibility")
+                if legacy.get("visibility") in ("private", "connections", "public")
+                else "private"
+            ),
+        )
+        self.knowledge_store.upsert(article)
 
     async def _cluster_memories(self, memory_texts: list[str]) -> dict[str, list[int]]:
         """Use LLM to cluster memories into topics."""
@@ -336,6 +546,12 @@ class KnowledgeCompiler:
             await self.load_articles()
 
         return self._match_articles(query, max_articles)
+
+    # Phase D removed apply_rollback. A verdict-driven typed-store
+    # rollback now propagates automatically: ``load_articles`` on
+    # the next read rebuilds the projection from
+    # ``knowledge_store.all()`` which already reflects the rolled-
+    # back active version.
 
     def _match_articles(self, query: str, max_articles: int = 3) -> str:
         """Pure in-memory keyword matching against loaded articles."""

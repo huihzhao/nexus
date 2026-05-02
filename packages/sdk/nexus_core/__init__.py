@@ -20,7 +20,7 @@ Architecture:
     - StorageBackend     — strategy pattern, pluggable persistence.
     - AgentRuntime       — facade returned by the entry-point functions;
                            bundles the 5 sub-providers below.
-    - SessionProvider, MemoryProvider, ArtifactProvider, TaskProvider,
+    - SessionProvider, ArtifactProvider, TaskProvider,
       ImpressionProvider — abstract interfaces for the 5 concerns.
     - Builder            — fluent runtime builder.
 
@@ -51,13 +51,12 @@ from .core.backend import StorageBackend
 from .core.providers import (
     AgentRuntime,
     SessionProvider,
-    MemoryProvider,
     ArtifactProvider,
     TaskProvider,
     ImpressionProvider,
 )
 from .core.models import (
-    Checkpoint, MemoryEntry, MemoryCompact, Artifact,
+    Checkpoint, Artifact,
     Impression, ImpressionDimensions, ImpressionSummary, NetworkStats,
     GossipMessage, GossipSession, AgentProfile,
 )
@@ -80,7 +79,6 @@ except ImportError:
 # ── Provider implementations ───────────────────────────────────────────
 from .providers import (
     SessionProviderImpl,
-    MemoryProviderImpl,
     ArtifactProviderImpl,
     TaskProviderImpl,
     ImpressionProviderImpl,
@@ -88,6 +86,9 @@ from .providers import (
 
 # ── Adapter registry ──────────────────────────────────────────────────
 from .adapters.registry import AdapterRegistry
+
+# ── Live thinking telemetry (server SSE / desktop live panel) ─────────
+from .thinking import ThinkingEmitter, ThinkingEvent
 
 # ── Social Protocol ───────────────────────────────────────────────────
 from .social.gossip import GossipProtocol
@@ -155,8 +156,52 @@ except Exception as _adk_err:  # noqa: BLE001 — optional integration
         _adk_err,
     )
 
-from .memory import EventLog, Event, CuratedMemory, EventLogCompactor
+from .memory import (
+    EventLog, Event, CuratedMemory, EventLogCompactor,
+    Episode, EpisodesStore,
+    Fact, FactsStore,
+    LearnedSkill, SkillsStore,
+    PersonaVersion, PersonaStore,
+    KnowledgeArticle, KnowledgeStore,
+)
 from .contracts import ContractEngine, ContractSpec, CheckResult, DriftScore, Rule
+
+# ── Anchor batch (BEP-Nexus §3) ───────────────────────────────────────
+from .anchor import (
+    AnchorBatch,
+    build_anchor_batch,
+    canonicalize as canonicalize_manifest,
+    SCHEMA_V1 as ANCHOR_SCHEMA_V1,
+    ZERO_DIGEST_HEX,
+)
+
+# ── Recursive Language Model (long-context projection primitive) ──────
+# See `nexus_core.rlm` and `docs/design/recursive-projection.md`.
+from .rlm import (
+    RLMRunner,
+    RLMConfig,
+    RLMResult,
+    TrajectoryEntry as RLMTrajectoryEntry,
+    run_rlm,
+)
+
+# ── Falsifiable evolution (Phase O — BEP-Nexus §3.4) ──────────────────
+# Proposal / verdict / revert primitives + the normative verdict
+# decision rules. See `nexus_core.evolution` and
+# `docs/design/falsifiable-evolution.md`.
+from .evolution import (
+    EvolutionProposal,
+    EvolutionVerdict,
+    EvolutionRevert,
+    TaskKindPrediction,
+    DriftThresholds,
+    FixMatch,
+    ObservedRegression,
+    score_verdict,
+    make_proposal_event,
+    make_verdict_event,
+    make_revert_event,
+)
 
 try:
     from .keystore import Keystore
@@ -174,13 +219,10 @@ __all__ = [
     "StorageBackend",
     "AgentRuntime",
     "SessionProvider",
-    "MemoryProvider",
     "ArtifactProvider",
     "TaskProvider",
     "ImpressionProvider",
     "Checkpoint",
-    "MemoryEntry",
-    "MemoryCompact",
     "Artifact",
     "FlushPolicy",
     "FlushBuffer",
@@ -189,7 +231,6 @@ __all__ = [
     "LocalBackend",
     "ChainBackend",
     "SessionProviderImpl",
-    "MemoryProviderImpl",
     "ArtifactProviderImpl",
     "TaskProviderImpl",
     "ImpressionProviderImpl",
@@ -240,12 +281,47 @@ __all__ = [
     "Event",
     "CuratedMemory",
     "EventLogCompactor",
+    # Phase J memory namespaces
+    "Episode",
+    "EpisodesStore",
+    "Fact",
+    "FactsStore",
+    "LearnedSkill",
+    "SkillsStore",
+    "PersonaVersion",
+    "PersonaStore",
+    "KnowledgeArticle",
+    "KnowledgeStore",
     # Contracts (ABC)
     "ContractEngine",
     "ContractSpec",
     "CheckResult",
     "DriftScore",
     "Rule",
+    # Anchor batch (BEP-Nexus §3)
+    "AnchorBatch",
+    "build_anchor_batch",
+    "canonicalize_manifest",
+    "ANCHOR_SCHEMA_V1",
+    "ZERO_DIGEST_HEX",
+    # Recursive Language Model
+    "RLMRunner",
+    "RLMConfig",
+    "RLMResult",
+    "RLMTrajectoryEntry",
+    "run_rlm",
+    # Falsifiable evolution (Phase O)
+    "EvolutionProposal",
+    "EvolutionVerdict",
+    "EvolutionRevert",
+    "TaskKindPrediction",
+    "DriftThresholds",
+    "FixMatch",
+    "ObservedRegression",
+    "score_verdict",
+    "make_proposal_event",
+    "make_verdict_event",
+    "make_revert_event",
     # Utilities
     "robust_json_parse",
     "load_dotenv",

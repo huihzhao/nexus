@@ -1,5 +1,5 @@
 """
-Tests for Social Protocol integration in Rune Nexus.
+Tests for Social Protocol integration in Nexus.
 
 Tests: SocialEngine, gossip between twins, impression formation,
 profile generation, social graph queries, CLI commands.
@@ -280,18 +280,16 @@ class TestEvolutionSocial:
         assert isinstance(engine.social, SocialEngine)
 
     def test_reflection_generates_profile(self, engine):
+        """Phase D 续 #2: seed FactsStore (canonical), not rune.memory."""
+        from nexus_core.memory import Fact
         asyncio.run(engine.initialize())
 
-        # Add some memories for context
-        asyncio.run(engine.rune.memory.add(
-            "User likes sushi", agent_id="test-twin",
-            metadata={"category": "preference", "importance": 4},
+        engine.memory.facts_store.upsert(Fact(
+            content="User likes sushi", category="preference", importance=4,
         ))
 
         result = asyncio.run(engine.trigger_reflection())
         assert "profile_update" in result
-
-        # Profile should have interests
         profile_data = result["profile_update"]
         assert "interests" in profile_data
 

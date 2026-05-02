@@ -1,17 +1,23 @@
 """
-Rune Protocol — Provider ABCs + AgentRuntime Facade.
+Nexus — Provider ABCs + AgentRuntime Facade.
 
 Provider ABCs define WHAT operations are available (domain logic).
 They depend on StorageBackend for HOW data is stored.
 
-    SessionProvider   — checkpoint / resume / crash recovery
-    MemoryProvider    — cross-session knowledge persistence
-    ArtifactProvider  — versioned output storage
-    TaskProvider      — task lifecycle tracking (A2A)
-    AgentRuntime          — Facade bundling all four providers
+    SessionProvider     — checkpoint / resume / crash recovery
+    ArtifactProvider    — versioned output storage
+    TaskProvider        — task lifecycle tracking (A2A)
+    ImpressionProvider  — peer-to-peer attestation
+    AgentRuntime        — Facade bundling the providers
 
 Framework adapters (ADK, LangGraph, CrewAI) consume these interfaces.
 They never see StorageBackend directly.
+
+Phase D 续 #2: ``MemoryProvider`` was removed. Long-term knowledge
+persistence is now handled by the typed Phase J namespace stores
+(``FactsStore`` / ``EpisodesStore`` / ``SkillsStore`` /
+``PersonaStore`` / ``KnowledgeStore``) which live in
+``nexus_core.memory`` and chain-mirror via ``VersionedStore``.
 
 Design:
     - Provider ABCs = Template Method (define the contract)
@@ -24,7 +30,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 from .models import (
-    Artifact, Checkpoint, MemoryCompact, MemoryEntry,
+    Artifact, Checkpoint,
     Impression, ImpressionSummary, NetworkStats,
 )
 
@@ -85,171 +91,13 @@ class SessionProvider(ABC):
         pass
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Memory Provider
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class MemoryProvider(ABC):
-    """
-    Framework-agnostic long-term memory persistence.
-
-    Maps to:
-      - Google ADK:  BaseMemoryService
-      - LangGraph:   Store (put/get/search)
-      - CrewAI:      Memory (encode, recall, forget)
-      - AutoGen:     Memory protocol (add, query, clear)
-    """
-
-    @abstractmethod
-    async def add(
-        self,
-        content: str,
-        agent_id: str,
-        user_id: str = "",
-        metadata: Optional[dict] = None,
-    ) -> str:
-        """Store a memory entry. Returns the memory_id."""
-        ...
-
-    @abstractmethod
-    async def search(
-        self,
-        query: str,
-        agent_id: str,
-        user_id: str = "",
-        top_k: int = 5,
-    ) -> list[MemoryEntry]:
-        """Search memories by semantic similarity."""
-        ...
-
-    @abstractmethod
-    async def delete(self, memory_id: str, agent_id: str) -> None:
-        """Delete a specific memory entry."""
-        ...
-
-    @abstractmethod
-    async def list_all(self, agent_id: str) -> list[MemoryEntry]:
-        """List all memories for an agent."""
-        ...
-
-    # ── Progressive retrieval (three-layer architecture) ──────────
-
-    async def search_compact(
-        self,
-        query: str,
-        agent_id: str,
-        user_id: str = "",
-        top_k: int = 20,
-    ) -> list[MemoryCompact]:
-        """
-        Layer 1: Return lightweight memory summaries (~50-100 tokens each).
-
-        LLMs scan this compact index to decide which memories are relevant,
-        then fetch full content via get_by_ids(). This saves ~10x tokens
-        compared to loading full memories every time.
-
-        Default implementation wraps search() for backward compatibility.
-        """
-        entries = await self.search(query, agent_id, user_id, top_k)
-        return [e.compact() for e in entries]
-
-    async def get_by_ids(
-        self,
-        memory_ids: list[str],
-        agent_id: str,
-    ) -> list[MemoryEntry]:
-        """
-        Layer 2: Fetch full memory content for selected IDs.
-
-        Called after search_compact() with only the IDs the LLM
-        determined are relevant. Returns full MemoryEntry objects.
-
-        Default implementation scans list_all() for backward compatibility.
-        """
-        all_entries = await self.list_all(agent_id)
-        id_set = set(memory_ids)
-        return [e for e in all_entries if e.memory_id in id_set]
-
-    async def bulk_add(
-        self,
-        entries: list[dict],
-        agent_id: str,
-        user_id: str = "",
-    ) -> list[str]:
-        """Add multiple memories with a single index write.
-
-        Each entry dict must have 'content' and optionally 'metadata'.
-        Default implementation loops add(). Concrete providers can
-        override to batch the index update (N+1 writes instead of 2N).
-        """
-        ids = []
-        for item in entries:
-            content = item.get("content", "")
-            if not content:
-                continue
-            mid = await self.add(content, agent_id, user_id, item.get("metadata"))
-            ids.append(mid)
-        return ids
-
-    # ── Capacity management ──────────────────────────────────────
-
-    async def count(self, agent_id: str) -> int:
-        """Return total memory count for an agent.
-
-        Default implementation delegates to list_all().
-        Concrete providers can override for O(1) from index.
-        """
-        entries = await self.list_all(agent_id)
-        return len(entries)
-
-    async def bulk_delete(self, memory_ids: list[str], agent_id: str) -> int:
-        """Delete multiple memories. Returns count actually deleted.
-
-        Default implementation loops delete(). Concrete providers
-        (e.g. ChainBackend) can override for single-batch writes.
-        """
-        deleted = 0
-        for mid in memory_ids:
-            await self.delete(mid, agent_id)
-            deleted += 1
-        return deleted
-
-    async def replace(
-        self,
-        memory_id: str,
-        new_content: str,
-        agent_id: str,
-        metadata: Optional[dict] = None,
-    ) -> str:
-        """Update a memory's content in-place. Returns memory_id.
-
-        Default implementation deletes + re-adds. Concrete providers
-        can override for atomic update.
-        """
-        await self.delete(memory_id, agent_id)
-        return await self.add(new_content, agent_id, metadata=metadata)
-
-    async def get_least_accessed(
-        self,
-        agent_id: str,
-        limit: int = 5,
-    ) -> list[MemoryEntry]:
-        """Return memories with lowest access_count (eviction candidates).
-
-        Default implementation sorts list_all() by access_count.
-        """
-        entries = await self.list_all(agent_id)
-        entries.sort(key=lambda m: (m.access_count, m.created_at))
-        return entries[:limit]
-
-    async def flush(self, agent_id: str) -> None:
-        """Force-flush memories to storage."""
-        pass
-
-    async def load_from_chain(self, agent_id: str) -> int:
-        """Cold-start: load memories from chain. Returns count loaded."""
-        return 0
+# Phase D 续 #2: ``MemoryProvider`` ABC, ``MemoryEntry``, and
+# ``MemoryCompact`` were deleted. Memory storage is now handled by
+# the typed Phase J namespace stores (FactsStore / EpisodesStore /
+# SkillsStore / PersonaStore / KnowledgeStore) which live in
+# ``nexus_core.memory`` and chain-mirror via ``VersionedStore``.
+# Existing data (if any) can be migrated with
+# ``nexus_core.migrations.memory_to_facts.migrate``.
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -476,14 +324,19 @@ class AgentRuntime:
     """
     Facade: the single object users interact with.
 
-    Bundles all five providers behind a clean interface.
+    Bundles the framework providers behind a clean interface.
     No internal implementation details are exposed.
+
+    Phase D 续 #2: ``memory`` was removed. Memory storage is now
+    handled by the typed Phase J namespace stores (FactsStore /
+    EpisodesStore / SkillsStore / PersonaStore / KnowledgeStore)
+    which are constructed inside ``DigitalTwin`` and chained
+    through to chain mirroring via ``VersionedStore``.
 
     Usage:
         rune = nexus_core.local()
 
         await rune.sessions.save_checkpoint(checkpoint)
-        entries = await rune.memory.search("revenue trends", agent_id="my-agent")
         version = await rune.artifacts.save("report.json", data, agent_id="my-agent")
         await rune.impressions.record(impression)
     """
@@ -491,14 +344,12 @@ class AgentRuntime:
     def __init__(
         self,
         sessions: SessionProvider,
-        memory: MemoryProvider,
         artifacts: ArtifactProvider,
         tasks: TaskProvider,
         impressions: Optional[ImpressionProvider] = None,
         backend: Optional[Any] = None,
     ):
         self.sessions: SessionProvider = sessions
-        self.memory: MemoryProvider = memory
         self.artifacts: ArtifactProvider = artifacts
         self.tasks: TaskProvider = tasks
         self.impressions: Optional[ImpressionProvider] = impressions
