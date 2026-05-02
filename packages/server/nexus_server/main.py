@@ -272,22 +272,24 @@ def create_app() -> FastAPI:
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(Exception, generic_exception_handler)
 
-    # Health check endpoint
-    @app.get(
-        "/health",
-        response_model=HealthCheckResponse,
-        tags=["health"],
-    )
-    async def health_check() -> HealthCheckResponse:
-        """Health check endpoint.
-
-        Returns:
-            HealthCheckResponse with status and timestamp
-        """
+    # Health check endpoint. Both /health and /healthz are supported —
+    # /health is the FastAPI convention, /healthz is the Kubernetes
+    # convention. Docker HEALTHCHECK + Caddy upstream probe + the
+    # desktop's pre-flight ping all hit /healthz, so we keep both.
+    async def _health() -> HealthCheckResponse:
         return HealthCheckResponse(
             status="healthy",
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
+
+    @app.get("/health", response_model=HealthCheckResponse, tags=["health"])
+    async def health_check() -> HealthCheckResponse:
+        return await _health()
+
+    @app.get("/healthz", response_model=HealthCheckResponse, tags=["health"],
+             include_in_schema=False)
+    async def healthz() -> HealthCheckResponse:
+        return await _health()
 
     # Include routers with API prefixes
     app.include_router(auth.router)
