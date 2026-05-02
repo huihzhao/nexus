@@ -242,6 +242,19 @@ public partial class ChatViewModel : ObservableObject
     public async Task InitializeAsync()
     {
         if (_initialized) return;
+
+        // Don't fire ANY of the polled / SSE background work if we
+        // aren't authenticated yet. Pre-login (Welcome wizard or Login
+        // screen) and post-logout, hitting the protected endpoints
+        // would 401-storm the server. ResetForUserAsync calls back
+        // into us on logout for the in-memory clear; the early return
+        // here is what stops us from re-arming the pollers under that
+        // path.
+        if (!_api.HasBearerToken)
+        {
+            return;
+        }
+
         try
         {
             var history = await _api.GetMessagesAsync(limit: 200);

@@ -328,6 +328,26 @@ def run_server() -> None:
     """Entry point for rune-server CLI command.
 
     Parses command-line arguments and starts uvicorn server.
+
+    HTTPS
+    -----
+    WebAuthn passkey auth requires HTTPS unless the client connects via
+    localhost. Two ways to give this server a TLS certificate:
+
+      1. **Self-signed** — `./scripts/generate_self_signed_cert.sh`
+         produces ``cert.pem`` + ``key.pem``. Quick, works for any IP /
+         hostname. Browsers show a "Not Secure" warning that the user
+         must click through; the desktop's WebView prompts to trust the
+         cert (one-time accept).
+
+      2. **Let's Encrypt** — `./scripts/setup_letsencrypt.sh` provisions
+         a real cert against your domain (or nip.io subdomain). No
+         browser warning; auto-renews via cron.
+
+    Either way, point the entry-point at the resulting files via
+    ``--ssl-certfile`` / ``--ssl-keyfile`` (or env vars
+    ``SSL_CERTFILE`` / ``SSL_KEYFILE``). Uvicorn handles the TLS
+    handshake natively — no Caddy / nginx required.
     """
     parser = argparse.ArgumentParser(
         description="Nexus API Server"
@@ -349,12 +369,60 @@ def run_server() -> None:
         action="store_true",
         help="Enable auto-reload on file changes",
     )
+    # TLS args — both optional. If you pass one you MUST pass the other,
+    # or uvicorn errors out at startup. Env vars SSL_CERTFILE /
+    # SSL_KEYFILE are the same thing for systemd / docker contexts where
+    # plumbing CLI args is awkward.
+    parser.add_argument(
+        "--ssl-certfile",
+        type=str,
+        default=os.environ.get("SSL_CERTFILE"),
+        help="PEM-encoded TLS certificate file (enables HTTPS).",
+    )
+    parser.add_argument(
+        "--ssl-keyfile",
+        type=str,
+        default=os.environ.get("SSL_KEYFILE"),
+        help="PEM-encoded TLS private key file (enables HTTPS).",
+    )
 
     args = parser.parse_args()
 
+    # Validation: if either TLS arg is set, both must be set + readable.
+    # Fail loudly at startup rather than letting uvicorn print a less
+    # actionable stack trace 200ms later.
+    tls_kwargs = {}
+    if args.ssl_certfile or args.ssl_keyfile:
+        if not (args.ssl_certfile and args.ssl_keyfile):
+            raise SystemExit(
+                "✗ --ssl-certfile and --ssl-keyfile must both be set "
+                "(or neither). Got cert=%r key=%r"
+                % (args.ssl_certfile, args.ssl_keyfile),
+            )
+        for name, path in (("cert", args.ssl_certfile),
+                           ("key",  args.ssl_keyfile)):
+            if not os.path.isfile(path):
+                raise SystemExit(
+                    f"✗ TLS {name} file not found: {path}\n"
+                    "  Generate one with ./scripts/generate_self_signed_cert.sh"
+                )
+        tls_kwargs["ssl_certfile"] = args.ssl_certfile
+        tls_kwargs["ssl_keyfile"] = args.ssl_keyfile
+        scheme = "https"
+    else:
+        scheme = "http"
+
     logger.info(
-        f"Starting Nexus API Server on {args.host}:{args.port}"
+        f"Starting Nexus API Server on {scheme}://{args.host}:{args.port}"
     )
+    if scheme == "http" and args.host not in ("127.0.0.1", "localhost"):
+        logger.warning(
+            "Server is bound to %s on plain HTTP. WebAuthn passkey auth "
+            "will REFUSE to run from any client that's not on the same "
+            "machine. Generate a TLS cert (see --ssl-certfile / scripts/"
+            "generate_self_signed_cert.sh) for remote access.",
+            args.host,
+        )
 
     import uvicorn
     uvicorn.run(
@@ -364,6 +432,7 @@ def run_server() -> None:
         reload=args.reload,
         factory=True,
         log_level=config.LOG_LEVEL.lower(),
+        **tls_kwargs,
     )
 
 

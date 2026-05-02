@@ -338,8 +338,12 @@ public record ChatResponse
 /// </summary>
 public class ApiClient
 {
-    private readonly HttpClient _httpClient;
-    private readonly string _serverUrl;
+    // Mutable so the Welcome wizard can re-target the live ApiClient
+    // without us having to reconstruct it (and rewire every child VM).
+    // See SetServerUrl / SetAcceptSelfSignedCert below.
+    private HttpClient _httpClient;
+    private string _serverUrl;
+    private bool _acceptSelfSignedCert;
     public string ServerUrl => _serverUrl;
     private string? _bearerToken;
 
@@ -368,13 +372,63 @@ public class ApiClient
     /// Initializes a new API client for a given server URL.
     /// </summary>
     /// <param name="serverUrl">Base URL of the Rune Protocol server (e.g., "https://api.runeprotocol.io").</param>
-    public ApiClient(string serverUrl)
+    /// <param name="acceptSelfSignedCert">When true, the underlying
+    /// HttpClient skips the system trust-store check and accepts
+    /// self-signed / unknown-CA certificates. Used for dev builds
+    /// pointing at a server that ran ``generate_self_signed_cert.sh``.
+    /// NEVER enable in production-public deployments.</param>
+    public ApiClient(string serverUrl, bool acceptSelfSignedCert = false)
     {
         _serverUrl = serverUrl.TrimEnd('/');
-        _httpClient = new HttpClient
+        _acceptSelfSignedCert = acceptSelfSignedCert;
+        _httpClient = BuildHttpClient(_acceptSelfSignedCert);
+    }
+
+    /// <summary>Build an HttpClient with or without self-signed cert
+    /// trust. Factored out so SetAcceptSelfSignedCert can swap the
+    /// inner client without altering the public API.</summary>
+    private static HttpClient BuildHttpClient(bool acceptSelfSignedCert)
+    {
+        if (acceptSelfSignedCert)
         {
-            Timeout = TimeSpan.FromSeconds(TimeoutSeconds)
+            // Trust-anything handler. Used ONLY for dev environments
+            // that rely on a self-signed cert (typical: VPS deployment
+            // before nip.io + Let's Encrypt is wired up). Splitting
+            // this from the default path means we don't quietly weaken
+            // TLS for users who have proper CA-signed certs.
+            var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback =
+                    (_, _, _, _) => true,
+            };
+            return new HttpClient(handler)
+            {
+                Timeout = TimeSpan.FromSeconds(TimeoutSeconds),
+            };
+        }
+        return new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(TimeoutSeconds),
         };
+    }
+
+    /// <summary>Toggle self-signed cert trust at runtime. Used by the
+    /// Welcome wizard's checkbox so the user can opt into accepting
+    /// the cert from a server they just set up via
+    /// <c>scripts/generate_self_signed_cert.sh</c>. Rebuilds the
+    /// underlying HttpClient — preserves the bearer token + Authorization
+    /// header.</summary>
+    public void SetAcceptSelfSignedCert(bool accept)
+    {
+        if (accept == _acceptSelfSignedCert) return;
+        _acceptSelfSignedCert = accept;
+        var oldToken = _bearerToken;
+        _httpClient.Dispose();
+        _httpClient = BuildHttpClient(_acceptSelfSignedCert);
+        if (!string.IsNullOrEmpty(oldToken))
+        {
+            SetBearerToken(oldToken);
+        }
     }
 
     /// <summary>
@@ -395,6 +449,25 @@ public class ApiClient
     {
         _bearerToken = null;
         _httpClient.DefaultRequestHeaders.Authorization = null;
+    }
+
+    /// <summary>True iff a bearer token is currently set.
+    /// View-models check this before starting polled background work
+    /// so we don't 401-storm the server before login (or after
+    /// logout, while VMs are tearing down).</summary>
+    public bool HasBearerToken => !string.IsNullOrEmpty(_bearerToken);
+
+    /// <summary>Re-target this client at a new server URL.
+    ///
+    /// Used by the first-run Welcome wizard (and the gear icon on the
+    /// login screen) to switch which deployment the desktop talks to
+    /// without restarting. The bearer token is cleared because tokens
+    /// are issued by a specific server and won't be honoured by a
+    /// different one.</summary>
+    public void SetServerUrl(string url)
+    {
+        _serverUrl = (url ?? "").TrimEnd('/');
+        ClearBearerToken();
     }
 
     /// <summary>

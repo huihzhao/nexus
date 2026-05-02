@@ -134,9 +134,34 @@
 
     <!-- Content -->
     <Panel Grid.Row="1">
-      <views:LoginView DataContext="{Binding LoginVm}"
-                       IsVisible="{Binding #RootWindow.DataContext.IsLoggedIn,
-                                  Converter={x:Static BoolConverters.Not}}"/>
+      <!-- First-run wizard: occludes everything else when ShowWelcome
+           is true. Set on startup if the user hasn't configured a
+           server URL yet, or when they click the gear icon on Login.
+           IMPORTANT: We wrap WelcomeView in a Panel so IsVisible can
+           bind against MainViewModel (the inherited DataContext)
+           while the inner WelcomeView's DataContext is explicitly
+           overridden to WelcomeVm. Without the wrapper, the
+           IsVisible binding tries to resolve `ShowWelcome` on
+           WelcomeVm — which doesn't have that property — and
+           silently evaluates to false (gear-button-does-nothing bug). -->
+      <Panel IsVisible="{Binding ShowWelcome}">
+        <views:WelcomeView DataContext="{Binding WelcomeVm}"/>
+      </Panel>
+
+      <!-- Login: visible when configured but not logged in. Same
+           wrapper trick as above — Panel evaluates ShowWelcome /
+           IsLoggedIn against MainViewModel. -->
+      <Panel>
+        <Panel.IsVisible>
+          <MultiBinding Converter="{x:Static BoolConverters.And}">
+            <Binding Path="ShowWelcome"
+                     Converter="{x:Static BoolConverters.Not}"/>
+            <Binding Path="IsLoggedIn"
+                     Converter="{x:Static BoolConverters.Not}"/>
+          </MultiBinding>
+        </Panel.IsVisible>
+        <views:LoginView DataContext="{Binding LoginVm}"/>
+      </Panel>
 
       <!-- Logged-in surface: session rail (left, collapsible) +
            ChatView (everything right of it). ChatView keeps its own

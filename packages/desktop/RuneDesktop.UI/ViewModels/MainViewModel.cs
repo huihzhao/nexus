@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RuneDesktop.Core.Models;
 using RuneDesktop.Core.Services;
+using RuneDesktop.UI.Helpers;
 
 namespace RuneDesktop.UI.ViewModels;
 
@@ -32,6 +33,12 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _userName = "";
     [ObservableProperty] private string _userId = "";
 
+    /// <summary>True when the first-run Welcome wizard should occlude
+    /// every other view. Set to true on startup if SettingsStore says
+    /// no server URL is configured yet, OR when the user clicks the
+    /// gear icon on the login screen to reconfigure.</summary>
+    [ObservableProperty] private bool _showWelcome;
+
     /// <summary>First grapheme of the display name, used for the avatar
     /// pill in the top-right corner. Returns "?" when no profile.</summary>
     public string UserInitial => string.IsNullOrEmpty(UserName)
@@ -56,18 +63,42 @@ public partial class MainViewModel : ObservableObject
     /// state and notifies <see cref="ChatVm"/> when the user picks a
     /// different thread.</summary>
     public SessionListViewModel SessionsVm { get; }
+    /// <summary>First-run / "change server URL" wizard. Always exists
+    /// so the gear icon on the Login view has somewhere to point at;
+    /// only displayed when ShowWelcome == true.</summary>
+    public WelcomeViewModel WelcomeVm { get; }
     public ApiClient Api { get; }
 
     public MainViewModel()
     {
-        var serverUrl = LoadServerUrl();
-        Api = new ApiClient(serverUrl);
+        // Decide between first-run wizard and normal login based on
+        // whether the user has saved a server URL before. New install
+        // → IsConfigured == false → ShowWelcome = true → everything
+        // else stays hidden until the user picks a server.
+        var settings = SettingsStore.Load();
+        var configured = !string.IsNullOrWhiteSpace(settings.ServerUrl);
+        ShowWelcome = !configured;
+
+        // Even on first run we need an ApiClient to exist so child
+        // VMs can be constructed; we just give it a sentinel URL that
+        // will be overwritten as soon as the wizard finishes. The
+        // self-signed-cert flag is also pre-loaded — for users on
+        // their second-run+ it carries over from settings.json so
+        // they don't have to re-opt-in every launch.
+        Api = new ApiClient(
+            string.IsNullOrWhiteSpace(settings.ServerUrl)
+                ? "http://localhost:8001" : settings.ServerUrl,
+            settings.AcceptSelfSignedCert);
 
         LoginVm = new LoginViewModel(Api);
         ChatVm = new ChatViewModel(Api);
         SessionsVm = new SessionListViewModel(Api);
+        WelcomeVm = new WelcomeViewModel();
+        WelcomeVm.SetupComplete += OnWelcomeComplete;
 
         LoginVm.LoginSuccess += OnLoginSuccess;
+        // Gear icon on the Login screen → re-open the Welcome wizard.
+        LoginVm.OpenSettingsRequested += (_, _) => OpenWelcome();
 
         // When the rail picks a session (or creates a new one), tell
         // the chat surface to refresh history filtered by that id.
@@ -160,6 +191,32 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>Invoked when the WelcomeViewModel signals completion.
+    /// Re-targets the ApiClient at the new URL (so LoginVm and
+    /// ChatVm immediately use it) and dismisses the wizard.</summary>
+    private void OnWelcomeComplete(
+        object? sender, WelcomeViewModel.WelcomeResult result)
+    {
+        Api.SetAcceptSelfSignedCert(result.AcceptSelfSignedCert);
+        Api.SetServerUrl(result.ServerUrl);
+        ShowWelcome = false;
+    }
+
+    /// <summary>Open the wizard from the gear icon on the Login
+    /// screen — same flow as first-run, just with the field
+    /// pre-populated. Used to switch between dev / prod / staging
+    /// servers without reinstalling.</summary>
+    [RelayCommand]
+    private void OpenWelcome()
+    {
+        // Pre-load current value into the wizard so the user sees
+        // "where they are now" instead of an empty box.
+        var current = SettingsStore.GetServerUrl();
+        if (!string.IsNullOrWhiteSpace(current))
+            WelcomeVm.ServerUrl = current;
+        ShowWelcome = true;
+    }
+
     [RelayCommand]
     private void Logout()
     {
@@ -181,6 +238,12 @@ public partial class MainViewModel : ObservableObject
         SessionsVm.CurrentSessionId = "";
     }
 
+    /// <summary>Legacy fallback: read ServerUrl from a static
+    /// <c>appsettings.json</c> sitting next to the binary. Kept for
+    /// backward-compat with dev workflows that pre-date the Welcome
+    /// wizard; new installs flow through SettingsStore which lives in
+    /// the per-user app-data directory. If both are present the user
+    /// SettingsStore wins.</summary>
     private static string LoadServerUrl()
     {
         try

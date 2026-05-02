@@ -9,6 +9,23 @@
          of the app is dark. -->
     <Border Background="{StaticResource BrandPurpleGradient}"/>
 
+    <!-- Gear icon: re-opens the Welcome wizard so the user can switch
+         which Nexus server they connect to without reinstalling.
+         Bound to LoginVm.OpenSettingsCommand (local DataContext) —
+         LoginVm fires OpenSettingsRequested which MainViewModel
+         catches and flips ShowWelcome=true. Local binding is more
+         reliable than walking the visual tree for {$parent[Window]}. -->
+    <Button HorizontalAlignment="Right" VerticalAlignment="Top"
+            Margin="0,16,16,0"
+            Classes="ghost"
+            Padding="8,6"
+            FontSize="16"
+            Command="{Binding OpenSettingsCommand}"
+            ToolTip.Tip="Change server URL">
+      <TextBlock Text="⚙"
+                 Foreground="{StaticResource TextPrimaryBrush}"/>
+    </Button>
+
     <Border HorizontalAlignment="Center" VerticalAlignment="Center"
             Width="380" Padding="40,42" CornerRadius="18"
             Background="{StaticResource SurfaceCardBrush}"

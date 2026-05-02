@@ -131,34 +131,19 @@
                            Foreground="{StaticResource TextSecondaryBrush}"/>
               </StackPanel>
             </UniformGrid>
-            <StackPanel Spacing="2">
-              <Button Content="🧠  Thinking"
-                      Command="{Binding BrowseThinkingCommand}"
-                      Classes="sidebar" FontSize="12"
-                      ToolTip.Tip="Inner monologue — what the agent is hearing, recalling, deciding right now (auto-refreshes every 2s)."/>
-              <Button Content="📋  Progress"
-                      Command="{Binding BrowseProgressCommand}"
-                      Classes="sidebar" FontSize="12"
-                      ToolTip.Tip="Planning + activity — pending evolution proposals on top, completed timeline below."/>
-              <Button Content="🗂  Work directory"
-                      Command="{Binding BrowseWorkdirCommand}"
-                      Classes="sidebar" FontSize="12"
-                      ToolTip.Tip="Greenfield bucket tree — agents/{user}/{memory,artifacts,sessions}/…"/>
-              <Border Height="1" Background="{StaticResource DividerBrush}"
-                      Margin="6,4,6,4"/>
-              <!-- Phase D 续 / #159 v3 — sidebar fully simplified.
-                   Browse memories / Brain namespaces / Browse anchors /
-                   Brain detail buttons all retired: their contents
-                   are now in the always-visible Cognition right column
-                   (Brain at a Glance + Learning Timeline + Data Flow +
-                   Just Learned + Chain Health). Only the Evolution
-                   timeline slide-over remains because of its Approve/
-                   Revert moderation surface. -->
-              <Button Content="🧬  Evolution timeline"
-                      Command="{Binding BrowseEvolutionCommand}"
-                      Classes="sidebar" FontSize="12"
-                      ToolTip.Tip="Falsifiable evolution: every persona / memory edit ships with a verdict (kept / warning / reverted). Inline Approve / Revert buttons let you override the auto-grader."/>
-            </StackPanel>
+            <!-- Phase D 续 / #159 v4 — every sidebar button retired.
+                 Their contents all live in the always-visible
+                 Cognition column now:
+                   * Thinking      → Cognition.THINKING section
+                   * Progress      → Cognition.JUST LEARNED + Recent Verdicts
+                   * Workdir       → Cognition.WORK DIRECTORY section
+                   * Evolution     → Cognition.RECENT VERDICTS (no inline
+                                     Approve/Revert here yet — TODO
+                                     re-attach them to verdict cards if
+                                     the user misses that surface).
+                 The whole point of the right-column reorganisation
+                 was to make slide-overs unnecessary; leaving the
+                 buttons here was just visual debt. -->
           </StackPanel>
 
           <!-- ── Phase D 续 / #159 v3 — Activity Stream retired.

@@ -286,6 +286,15 @@ PASSKEY_PAGE_HTML = """<!DOCTYPE html>
             <p>Secure authentication with passkeys</p>
         </div>
 
+        <!-- Insecure-context banner (HTTP non-localhost). Shown by
+             checkSecureContext() on page load when WebAuthn won't
+             work; otherwise stays hidden. -->
+        <div id="insecureBanner"
+             style="display:none; background:#FFF3CD; color:#664D03;
+                    border:1px solid #FFE69C; border-radius:8px;
+                    padding:14px 16px; margin-bottom:16px;
+                    font-size:13px; line-height:1.5;"></div>
+
         <div class="mode-toggle">
             <button class="mode-btn active" onclick="setMode('login')">Sign In</button>
             <button class="mode-btn" onclick="setMode('register')">Create Account</button>
@@ -341,6 +350,52 @@ PASSKEY_PAGE_HTML = """<!DOCTYPE html>
         const { startRegistration, startAuthentication } = SimpleWebAuthnBrowser;
         const SERVER_URL = window.location.origin;
         let currentMode = 'login';
+
+        // ── Secure-context guard ────────────────────────────────────
+        // WebAuthn passkeys require HTTPS unless host is "localhost".
+        // The browser's `navigator.credentials.create/get` calls fail
+        // silently otherwise — historically users saw the buttons do
+        // "nothing" with no error. Detect the bad case here, disable
+        // the login/register buttons up front, and show a clear,
+        // actionable error so the user knows the deploy needs HTTPS.
+        function checkSecureContext() {
+            const isLocalhost = location.hostname === 'localhost'
+                || location.hostname === '127.0.0.1'
+                || location.hostname === '[::1]';
+            // window.isSecureContext is true for HTTPS or localhost.
+            if (window.isSecureContext || isLocalhost) return true;
+
+            const banner = document.getElementById('insecureBanner');
+            if (banner) {
+                banner.style.display = 'block';
+                // Use template literals (backticks) so we don't have to
+                // escape apostrophes — the previous version with
+                // ``'You\\'re on '`` got mangled by Python's string
+                // escapes (\\' → '), producing JS like ``'You're on '``
+                // which the parser bailed on with "Unexpected identifier
+                // 're'", taking the whole script down with it. Backticks
+                // sidestep the entire quote-escaping minefield.
+                banner.innerHTML = `
+                    <strong>Passkeys need HTTPS.</strong> You are on
+                    <code>${location.protocol}//${location.host}</code>
+                    (plain HTTP). Browsers block WebAuthn outside HTTPS / localhost.<br><br>
+                    Easiest fix: deploy with the included Docker + Caddy setup
+                    (<code>scripts/deploy_setup.sh</code>) — that gives you
+                    <code>https://&lt;ip-with-dashes&gt;.nip.io</code> with a real
+                    Let&apos;s Encrypt cert and passkeys work normally.<br><br>
+                    For local dev, point the desktop at <code>http://localhost:8001</code>
+                    instead of the public IP.
+                `;
+            }
+            // Disable both action buttons so users don't keep clicking.
+            ['loginBtn', 'registerBtn'].forEach(id => {
+                const b = document.getElementById(id);
+                if (b) { b.disabled = true; b.style.opacity = '0.55'; }
+            });
+            return false;
+        }
+        // Run on page load so the warning is visible BEFORE any click.
+        document.addEventListener('DOMContentLoaded', checkSecureContext);
 
         function setMode(mode) {
             currentMode = mode;
