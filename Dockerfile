@@ -121,8 +121,14 @@ EXPOSE 8001
 
 # uvicorn directly, not the `nexus-server` console script — gives us
 # explicit log config + worker count control via env vars.
-CMD ["uvicorn", "nexus_server.main:app", \
+# `nexus_server.main` exposes `create_app()` (an app factory), NOT a
+# top-level `app` variable. uvicorn needs --factory to know to call it.
+# An earlier rev pointed at `:app` and crash-looped with
+# `Attribute "app" not found in module "nexus_server.main"` because
+# create_app is a callable, not a module attribute named "app".
+CMD ["uvicorn", "nexus_server.main:create_app", \
      "--host", "0.0.0.0", \
      "--port", "8001", \
      "--proxy-headers", \
-     "--forwarded-allow-ips", "*"]
+     "--forwarded-allow-ips", "*", \
+     "--factory"]
