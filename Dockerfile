@@ -45,9 +45,20 @@ COPY packages/nexus  packages/nexus
 COPY packages/server packages/server
 
 RUN /opt/venv/bin/pip install --no-cache-dir \
-        -e packages/sdk \
-        -e packages/nexus \
-        -e packages/server
+        ./packages/sdk \
+        ./packages/nexus \
+        ./packages/server
+# NOTE: deliberately NOT using `pip install -e ...` (editable) here.
+# Editable installs write the source-tree absolute path into a `.pth`
+# file inside the venv. In multi-stage Docker builds the builder stage's
+# WORKDIR (`/build/...`) doesn't exist in the runtime stage (which only
+# has `/app/...` after the COPY --from=builder step), so the .pth path
+# resolves to nothing and Python can't find `nexus_server` at runtime
+# (`ModuleNotFoundError: No module named 'nexus_server'`).
+# Plain (non-editable) install copies the package contents into the
+# venv's site-packages directly, decoupling import resolution from the
+# source-tree path. The downside (no live edits without rebuild) is a
+# non-issue for production images.
 
 # ── Stage 2: runtime (slim + Node + non-root user) ───────────────────
 FROM python:3.11-slim-bookworm AS runtime
