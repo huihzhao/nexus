@@ -29,7 +29,15 @@
 #endif
 
 [Setup]
-AppId={{B97E1ECC-NEXU-4A1A-9D29-A78C9A5DE001}
+; AppId is a STABLE UUID — DO NOT change it across releases. Inno Setup
+; uses it to detect prior installs for upgrade-in-place. If you change
+; this, every existing user's installer thinks it's a fresh install
+; and leaves an orphan uninstaller behind in Add/Remove Programs.
+;
+; Earlier rev had `B97E1ECC-NEXU-...` here, which iscc.exe rejects
+; because UUIDs are strict 0-9a-f and "NEXU" isn't hex. Replaced with a
+; real GUID generated via `[Guid]::NewGuid()`.
+AppId={{B97E1ECC-3B1E-4A1A-9D29-A78C9A5DE001}
 AppName=Nexus
 AppVersion={#AppVersion}
 AppVerName=Nexus {#AppVersion}
