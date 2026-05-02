@@ -55,8 +55,17 @@ nexus-server = "nexus_server.main:run_server"
 nexus-core = { workspace = true }
 nexus = { workspace = true }
 
-[tool.setuptools]
-packages = ["nexus_server"]
+[tool.setuptools.packages.find]
+# Auto-discover all subpackages (nexus_server, nexus_server.auth, etc).
+# Previously this was a hand-maintained `packages = ["nexus_server"]`,
+# which only included the top-level package. Subdirectories that ARE
+# real Python packages (like nexus_server/auth/, with its own
+# __init__.py + routes.py + passkey_page.py) got dropped on install,
+# and the runtime import `from nexus_server.auth import get_current_user`
+# blew up with ModuleNotFoundError. `find` recursively picks up every
+# directory containing __init__.py, so new subpackages auto-ship.
+where = ["."]
+include = ["nexus_server*"]
 
 [tool.black]
 line-length = 100
