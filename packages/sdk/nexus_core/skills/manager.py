@@ -235,43 +235,36 @@ class SkillManager:
         )
 
     async def install(self, source: str) -> InstalledSkill:
-        """Install a skill from GitHub URL, LobeHub marketplace, or identifier.
+        """Install a skill from the Anthropic skills hub or a GitHub URL.
 
-        Supports:
-          - GitHub tree URL: https://github.com/org/repo/tree/main/skills/...
-          - LobeHub identifier: lobehub:<identifier> or just <identifier>
-          - Gemini-official shortcut: gemini:<skill_name>
-            → resolves to https://github.com/google-gemini/gemini-skills/tree/main/skills/<name>
-          - GitHub raw folder: org/repo/skills/category/skill-name
+        Supported identifier shapes (in priority order):
+          - Full GitHub tree URL:
+              https://github.com/anthropics/skills/tree/main/document-skills/pdf
+          - 'anthropic:<name>' shortcut → rewritten to the canonical
+            anthropics/skills tree URL.
+          - Bare skill name ('pdf', 'docx', ...) → assumed to be an
+            Anthropic skill. The GitHub installer searches the repo
+            for a directory matching the name.
+          - GitHub-style path 'org/repo/...' → treated as a GitHub URL.
+
+        Earlier revs also supported lobehub: and gemini: prefixes; both
+        marketplaces were dropped (LobeHub requires creds; Gemini's repo
+        layout drifted from the SKILL.md convention). The Anthropic
+        path is the only fully-automatable, no-auth flow we ship.
 
         Args:
-            source: GitHub URL, marketplace identifier, or skill name
+            source: GitHub URL, anthropic: shortcut, or bare skill name.
 
         Returns:
             The installed skill.
         """
-        # GitHub URL
+        # Full GitHub URL — pass straight through
         if "github.com" in source:
             return await self._install_from_github(source)
 
-        # Explicit LobeHub prefix
-        if source.startswith("lobehub:"):
-            identifier = source[8:]
-            return await self._install_from_lobehub(identifier)
-
-        # Gemini official skills repo shortcut. The google-gemini/gemini-skills
-        # repo is structured as ``skills/<name>/SKILL.md`` — exactly the shape
-        # _install_from_github already handles, so we just rewrite the
-        # identifier into a tree URL and reuse the GitHub path.
-        if source.startswith("gemini:"):
-            name = source[len("gemini:"):]
-            return await self._install_from_github(
-                f"https://github.com/google-gemini/gemini-skills/tree/main/skills/{name}"
-            )
-
-        # Anthropic official skills repo shortcut — same convention.
-        # (anthropics/skills hosts pdf, docx, xlsx, pptx, mcp-builder,
-        # skill-creator and friends — the canonical reference set.)
+        # Anthropic official skills repo shortcut. anthropics/skills
+        # hosts pdf, docx, xlsx, pptx, mcp-builder, skill-creator and
+        # friends — the canonical reference set.
         if source.startswith("anthropic:"):
             name = source[len("anthropic:"):]
             return await self._install_from_github(
@@ -282,8 +275,12 @@ class SkillManager:
         if "/" in source and not source.startswith("/"):
             return await self._install_from_github(f"https://github.com/{source}")
 
-        # Default: try LobeHub marketplace by identifier
-        return await self._install_from_lobehub(source)
+        # Default: bare skill name → try Anthropic skills hub.
+        # _install_from_github will walk the repo and surface a clean
+        # error if no matching skill is found.
+        return await self._install_from_github(
+            f"https://github.com/anthropics/skills/tree/main/skills/{source}"
+        )
 
     async def search_anthropic_official(
         self, query: str, limit: int = 10,
@@ -551,17 +548,29 @@ class SkillManager:
                     out[key.strip()] = val.strip().strip("\"'")
             return out
 
+    # Process-level cache for LobeHub availability. The CLI requires
+    # `MARKET_CLIENT_ID` + `MARKET_CLIENT_SECRET` env vars (or a prior
+    # `lhm register`). Without credentials EVERY search returns
+    # "No credentials found" to stderr, exits non-zero, and we waste
+    # a 30s subprocess timeout per search request — across N synonym
+    # variants that's minutes of dead time per agent action. We probe
+    # once, cache the answer, and fast-skip subsequent calls.
+    _lobehub_credentials_state: str = ""  # "" | "ok" | "missing"
+
     async def search_lobehub(self, query: str, limit: int = 10) -> list[dict]:
         """Search LobeHub Skills Marketplace.
 
-        Args:
-            query: Search keyword (e.g., "pdf editor", "wallet", "deploy")
-            limit: Max results to return
-
-        Returns:
-            List of skill info dicts: [{identifier, name, description, installs, stars}]
+        Returns [] silently if LobeHub credentials aren't configured —
+        the CLI is auth-only as of @lobehub/market-cli 0.0.28. Set
+        MARKET_CLIENT_ID + MARKET_CLIENT_SECRET in the agent env to
+        enable.
         """
         import subprocess
+
+        # Fast-path: we already know creds are missing → skip silently.
+        if SkillManager._lobehub_credentials_state == "missing":
+            return []
+
         # Preflight: try to install Node if missing. Best-effort — on
         # failure we just return [] (caller treats it as no results).
         await _ensure_node_available()
@@ -572,10 +581,27 @@ class SkillManager:
                  "--q", query, "--page-size", str(limit), "--output", "json"],
                 capture_output=True, text=True, timeout=30,
             )
+            # Detect the auth-required failure mode and disable for the
+            # rest of the process. The CLI prints this exact phrase to
+            # stdout / stderr depending on version.
+            combined = (result.stdout or "") + "\n" + (result.stderr or "")
+            if "No credentials found" in combined:
+                if SkillManager._lobehub_credentials_state != "missing":
+                    logger.warning(
+                        "LobeHub backend disabled — `lhm` CLI requires "
+                        "MARKET_CLIENT_ID / MARKET_CLIENT_SECRET env vars "
+                        "or `lhm register`. Falling back to anthropic / "
+                        "gemini / GitHub topic sources only. Set those "
+                        "env vars to re-enable."
+                    )
+                SkillManager._lobehub_credentials_state = "missing"
+                return []
+
             if result.stdout.strip():
                 import json
                 data = json.loads(result.stdout.strip())
                 items = data.get("items", [])
+                SkillManager._lobehub_credentials_state = "ok"
                 return [
                     {
                         "identifier": item.get("identifier", ""),
@@ -921,25 +947,30 @@ class SkillManager:
         return [it for _, it in out]
 
     async def search_mcp(self, query: str, limit: int = 10) -> list[dict]:
-        """Search the MCP catalog.
+        """Search the curated MCP catalog.
 
-        Lookup order:
-          1. **Curated catalog** (curated_mcp.json) — hand-vetted, no
-             auth needed. Almost always has what you want for chains,
-             SaaS, dev tools, databases.
-          2. **LobeHub marketplace** (npx @lobehub/market-cli) — only
-             if `MARKET_CLIENT_ID` is set in the env. If the CLI yells
-             "No credentials found" we surface that as a hint instead
-             of returning [] and fooling the LLM into thinking the
-             search was authoritative.
+        Reads ``curated_mcp.json`` (hand-vetted, ~30 servers covering
+        the common cases — chains, SaaS, dev tools, databases). Zero
+        auth, zero network — ideal for the agent to surface vetted
+        options without hitting external services.
+
+        Earlier revs also tried LobeHub and Smithery as supplementary
+        backends. Both ended up not earning their keep:
+          * LobeHub (@lobehub/market-cli) silently requires
+            MARKET_CLIENT_ID/_SECRET — no creds = 30 s subprocess per
+            query for zero results.
+          * Smithery search is fully public and finds ~3000 servers,
+            but every hosted entry needs OAuth to actually install
+            (out of scope for a server-side agent). Surfaced 3000
+            results that the agent then couldn't act on.
+        Both removed; if/when we want the long tail back, do it via
+        a dedicated tool with a clear UX rather than a silent layer.
 
         Returns: list of {identifier, name, description, tools_count, source}.
-        Empty list ONLY if both sources came up dry — the caller can
+        Empty list = nothing matched in the catalog — caller can
         legitimately say "nothing found, fall back to web_search".
         """
         results: list[dict] = []
-
-        # Layer 1: curated catalog
         for it in self._match_curated(self._curated_catalog(), query)[:limit]:
             results.append({
                 "identifier":  it.get("identifier", ""),
@@ -950,46 +981,6 @@ class SkillManager:
                 "category":    it.get("category", ""),
                 "source":      "curated",
             })
-
-        # Layer 2: LobeHub marketplace (only if creds are set + npx works)
-        import subprocess
-        try:
-            result = await asyncio.to_thread(
-                subprocess.run,
-                ["npx", "-y", "@lobehub/market-cli", "mcp", "search",
-                 "--q", query, "--page-size", str(limit), "--output", "json"],
-                capture_output=True, text=True, timeout=30,
-            )
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            # The CLI prints "No credentials found." to stderr (or stdout
-            # depending on version). Detect that explicitly so the LLM
-            # can decide whether to ask the operator to set up auth or
-            # just lean on the curated layer.
-            combined = (stdout + "\n" + stderr).lower()
-            if "no credentials" in combined or "lhm register" in combined:
-                logger.info(
-                    "LobeHub MCP search skipped: market-cli requires "
-                    "MARKET_CLIENT_ID/_SECRET. Returning curated-only results.",
-                )
-            elif stdout:
-                data = json.loads(stdout)
-                items = data.get("items", [])
-                for item in items[:limit]:
-                    results.append({
-                        "identifier":  item.get("identifier", ""),
-                        "name":        item.get("name", ""),
-                        "description": (item.get("description", "") or "")[:140],
-                        "author":      item.get("author", ""),
-                        "tools_count": item.get("toolsCount", 0),
-                        "category":    item.get("category", ""),
-                        "source":      "lobehub",
-                    })
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            logger.info("LobeHub MCP search unavailable (%s); curated-only.", e)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("LobeHub MCP search failed: %s", e)
-
         return results
 
     async def install_mcp(self, identifier: str, tool_registry=None) -> dict:
@@ -1050,59 +1041,50 @@ class SkillManager:
                 ),
             }
 
-        # LobeHub fallback path
-        import subprocess
-        try:
-            result = await asyncio.to_thread(
-                subprocess.run,
-                ["npx", "-y", "@lobehub/market-cli", "mcp", "info",
-                 identifier, "--output", "json"],
-                capture_output=True, text=True, timeout=30,
-            )
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            combined = (stdout + "\n" + stderr).lower()
-            if "no credentials" in combined or "lhm register" in combined:
-                return {
-                    "name": identifier, "tools": [],
-                    "error": (
-                        "LobeHub install requires MARKET_CLIENT_ID + "
-                        "MARKET_CLIENT_SECRET env vars (run `lhm register`). "
-                        "Try a curated catalog identifier (npm:*) instead — "
-                        "search again to see them."
-                    ),
-                }
-            if stdout:
-                info = json.loads(stdout)
-                name = info.get("name", identifier)
-                command = info.get("command", "")
-                args = info.get("args", [])
+        # Smithery path: smithery:<qualified-name>
+        # Hosted Smithery MCP servers require an OAuth round-trip
+        # (auth.smithery.ai/<server>/authorize) which we cannot drive
+        # headlessly from a server-side agent. Return a structured
+        # error with actionable next steps so the agent can tell the
+        # user exactly how to complete the install. Self-hosted
+        # Smithery entries (rare) would have surfaced as `npm:` in
+        # their search payload, hitting the curated branch above.
+        if identifier.startswith("smithery:"):
+            qn = identifier[len("smithery:"):]
+            return {
+                "name": qn,
+                "tools": [],
+                "source": "smithery",
+                "error": (
+                    f"Smithery hosted MCP servers need a one-time OAuth "
+                    f"authorization that the server-side agent can't "
+                    f"complete on its own. To finish install:\n"
+                    f"  1. Open https://smithery.ai/server/{qn} in a "
+                    f"browser and click Connect.\n"
+                    f"  2. On the agent host, run "
+                    f"`npx -y @smithery/cli install {qn}` once — "
+                    f"it'll register the server in your local config "
+                    f"using the auth from step 1.\n"
+                    f"Hosted-server auto-install is tracked separately."
+                ),
+            }
 
-                if command and tool_registry:
-                    from ..mcp import MCPServerConfig
-                    config = MCPServerConfig(
-                        name=name,
-                        transport="stdio",
-                        command=command,
-                        args=args,
-                    )
-                    tool_names = await tool_registry.register_mcp_server(config)
-                    logger.info("MCP server '%s' installed (lobehub): %d tools",
-                                name, len(tool_names))
-                    return {"name": name, "tools": tool_names, "source": "lobehub"}
-
-                return {"name": name, "tools": [],
-                        "note": "No tool_registry provided"}
-
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            return {"name": identifier, "tools": [],
-                    "error": f"npx unavailable: {e}"}
-        except Exception as e:  # noqa: BLE001
-            logger.warning("MCP install failed: %s", e)
-            return {"name": identifier, "tools": [], "error": str(e)}
-
-        return {"name": identifier, "tools": [],
-                "error": "MCP info returned empty payload"}
+        # No matching backend. Earlier rev would have tried a LobeHub
+        # marketplace fallback here, but that path required
+        # MARKET_CLIENT_ID/_SECRET and silently failed for every
+        # un-credentialed agent. With LobeHub removed the only valid
+        # identifiers are `npm:` (curated) and `smithery:` (above);
+        # anything else is a typo or hallucination from the LLM.
+        return {
+            "name": identifier, "tools": [],
+            "error": (
+                f"Unknown MCP identifier '{identifier}'. Valid prefixes:\n"
+                f"  * npm:<package>   (curated catalog — direct install)\n"
+                f"  * smithery:<name> (Smithery registry — needs OAuth)\n"
+                f"Run manage_mcp(action='search', query='...') to see "
+                f"matching identifiers."
+            ),
+        }
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:

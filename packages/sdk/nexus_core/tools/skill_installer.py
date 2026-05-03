@@ -136,6 +136,18 @@ class SkillInstallerTool(BaseTool):
 
     def __init__(self, skill_manager: "SkillManager"):
         self._mgr = skill_manager
+        # Search-result cache so install() can recover when the LLM
+        # passes a bare `name` instead of the proper `identifier` from
+        # a previous search. Common failure mode without this: agent
+        # search returns 7 entries (each with full GitHub URL
+        # identifiers), agent renders a markdown bullet list using just
+        # the names, user replies "install slack-gif-creator", agent
+        # passes "slack-gif-creator" as identifier — but the GitHub
+        # backend's installer needs the full URL. We now look up the
+        # name in the cache first and substitute the real identifier.
+        # Bounded LRU-ish: keep the latest 200 entries (only updated on
+        # search, so memory is trivially bounded).
+        self._recent_searches: dict[str, dict] = {}
 
     @property
     def name(self) -> str:
@@ -144,19 +156,19 @@ class SkillInstallerTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Search and install Anthropic-style skills (SKILL.md format) from "
-            "THREE marketplaces — LobeHub (community catalog, ~100K skills via "
-            "npx CLI), Google's official Gemini Skills repo "
-            "(google-gemini/gemini-skills), and the GitHub `claude-skills` "
-            "topic (third-party skills with a topic tag, several hundred "
-            "repos) — or list installed skills. Search auto-expands the "
+            "Search and install Anthropic-style skills (SKILL.md format) "
+            "from the official anthropics/skills repo on GitHub "
+            "(canonical Claude skill hub: pdf, docx, xlsx, pptx, "
+            "skill-creator, and ~10 more). Search auto-expands the "
             "query into synonym variants (e.g. 'pdf' → 'pdf, pdf reader, "
-            "pdf extract, pypdf, document parser') and fans out across all "
-            "three sources in parallel, dramatically improving recall. Use "
-            "this when the user asks for a capability you don't have: "
-            "action='search' returns interleaved matches with a source tag, "
-            "action='install' adds a chosen skill by identifier, "
-            "action='list' shows what's already installed."
+            "pdf extract, document parser') for better recall. The "
+            "whole flow is fully automated end-to-end — no auth, no "
+            "OAuth, no marketplace credentials. Use this when the user "
+            "asks for a capability you don't have: action='search' to "
+            "find candidates, action='install' to add one (identifier "
+            "comes from search results), action='list' to see what's "
+            "already installed, action='show' to load a skill's full "
+            "SKILL.md into your context before using it."
         )
 
     @property
@@ -168,17 +180,18 @@ class SkillInstallerTool(BaseTool):
                     "type": "string",
                     "enum": ["search", "install", "show", "list"],
                     "description": (
-                        "search → query marketplaces (with synonym expansion) "
-                        "and return matches; "
-                        "install → add a specific skill by id (the 'identifier' "
-                        "field from a previous search); "
-                        "show → load the FULL SKILL.md instructions for an "
-                        "already-installed skill into your context. CALL THIS "
-                        "FIRST whenever the user asks you to do something a "
-                        "skill covers (e.g. 'analyze this PDF' → first "
-                        "show(name='pdf') to load the operations, THEN follow "
-                        "the instructions). The system prompt only carries "
-                        "skill names + 80-char descriptions, not the actual "
+                        "search → query the Anthropic skills hub (with "
+                        "synonym expansion) and return matches; "
+                        "install → add a specific skill by id (the "
+                        "'identifier' field from a previous search); "
+                        "show → load the FULL SKILL.md instructions for "
+                        "an already-installed skill into your context. "
+                        "CALL THIS FIRST whenever the user asks you to "
+                        "do something a skill covers (e.g. 'analyze "
+                        "this PDF' → first show(name='pdf') to load the "
+                        "operations, THEN follow the instructions). The "
+                        "system prompt only carries skill names + "
+                        "80-char descriptions, not the actual "
                         "operations — show is how you read those.; "
                         "list → show currently installed skill names."
                     ),
@@ -190,34 +203,32 @@ class SkillInstallerTool(BaseTool):
                 "identifier": {
                     "type": "string",
                     "description": (
-                        "For action='install': the skill identifier returned "
-                        "by a previous search. LobeHub identifiers are bare "
-                        "slugs; Gemini official skills use the prefix "
-                        "'gemini:<name>'; GitHub-topic results use full "
-                        "https://github.com/... URLs (raw URLs also accepted)."
+                        "For action='install': the skill identifier "
+                        "returned by a previous search (a GitHub URL "
+                        "pointing into anthropics/skills). The bare "
+                        "name from a search result also works — "
+                        "search results are cached and bare names are "
+                        "looked up automatically."
                     ),
                 },
                 "name": {
                     "type": "string",
                     "description": (
                         "For action='show': the installed skill's name "
-                        "(see action='list' to find it). Returns the full "
-                        "SKILL.md content + any reference docs."
+                        "(see action='list' to find it). Returns the "
+                        "full SKILL.md content + any reference docs."
                     ),
                 },
+                # `source` retained for back-compat — earlier revs
+                # supported lobehub/gemini/github backends. They were
+                # all removed in favour of anthropics/skills only.
+                # Any value is silently treated as "anthropic".
                 "source": {
                     "type": "string",
-                    "enum": ["all", "anthropic", "gemini", "lobehub", "github"],
+                    "enum": ["anthropic"],
                     "description": (
-                        "Which marketplace to search. 'all' (default) queries "
-                        "all four sources and interleaves results. "
-                        "'anthropic' = anthropics/skills (canonical, includes "
-                        "pdf/docx/xlsx/pptx/skill-creator). "
-                        "'gemini' = google-gemini/gemini-skills. "
-                        "'lobehub' = LobeHub community catalog (~100K skills, "
-                        "via npx CLI). "
-                        "'github' = GitHub claude-skills topic search. "
-                        "Ignored for action!=search."
+                        "Marketplace to search. Only 'anthropic' "
+                        "(anthropics/skills repo) is supported."
                     ),
                 },
             },
@@ -258,28 +269,23 @@ class SkillInstallerTool(BaseTool):
                     query, len(variants), variants,
                 )
 
-                # Build the task fan-out. For 'all' source we pay one
-                # request per (variant × backend); 6 variants × 3
-                # backends = 18 parallel calls in the worst case, all
-                # short. _MAX_RESULTS per call keeps the response bounded.
+                # Build the task fan-out. We only query Anthropic's
+                # canonical skills repo now — earlier revs also queried
+                # Gemini, GitHub topic, and LobeHub but each had its
+                # own friction (rate-limited, low signal, or auth-
+                # required). Anthropic's repo is fully public, fully
+                # automatable end-to-end (search via GitHub contents
+                # API, install via sparse-checkout), and covers ~90%
+                # of the agent's reflexive capability needs.
+                #
+                # The `source` param is kept for back-compat but
+                # ignored — every value collapses to anthropic-only
+                # to avoid surfacing dead-end results.
                 tasks: list = []
                 task_meta: list[tuple[str, str]] = []  # (source, variant)
                 for v in variants:
-                    # Order matters: query the highest-quality canonical
-                    # sources first so when we sort by stars / appearance
-                    # later, anthropic/gemini land before community hits.
-                    if src in ("all", "anthropic"):
-                        tasks.append(self._mgr.search_anthropic_official(v, limit=_MAX_RESULTS))
-                        task_meta.append(("anthropic", v))
-                    if src in ("all", "gemini"):
-                        tasks.append(self._mgr.search_gemini_official(v, limit=_MAX_RESULTS))
-                        task_meta.append(("gemini", v))
-                    if src in ("all", "lobehub"):
-                        tasks.append(self._mgr.search_lobehub(v, limit=_MAX_RESULTS))
-                        task_meta.append(("lobehub", v))
-                    if src in ("all", "github"):
-                        tasks.append(self._mgr.search_github_topic(v, limit=_MAX_RESULTS))
-                        task_meta.append(("github-topic", v))
+                    tasks.append(self._mgr.search_anthropic_official(v, limit=_MAX_RESULTS))
+                    task_meta.append(("anthropic", v))
 
                 try:
                     gathered = await asyncio.wait_for(
@@ -291,10 +297,9 @@ class SkillInstallerTool(BaseTool):
                         success=False,
                         output=(
                             f"Skill marketplace search timed out after "
-                            f"{_SEARCH_TIMEOUT:.0f}s — network may be slow "
-                            f"or LobeHub CLI is downloading for the first "
-                            f"time. Try again with source='gemini' or "
-                            f"source='github' to skip the slow LobeHub CLI."
+                            f"{_SEARCH_TIMEOUT:.0f}s — GitHub may be "
+                            f"throttling. Set GITHUB_TOKEN env var to "
+                            f"raise the rate limit from 60/h to 5000/h."
                         ),
                     )
 
@@ -322,26 +327,39 @@ class SkillInstallerTool(BaseTool):
                             "stars": r.get("stars"),
                             "tags": r.get("tags", []),
                         })
-                # Rank: canonical Anthropic / Gemini sources first
-                # (highest signal-to-noise), then GitHub stars, then
-                # name. The LLM will still pass the final choice up to
-                # the user, but anthropic/skills/pdf landing at the
-                # top of the list when the query is "pdf" matches what
-                # most users would want as the default.
-                _SOURCE_PRIORITY = {
-                    "anthropic": 0,
-                    "gemini": 1,
-                    "github-topic": 2,
-                    "lobehub": 3,
-                }
+                # Single-source after the multi-marketplace cleanup —
+                # only stars + name matter for ranking. Kept the sort
+                # for back-compat (search_anthropic_official preserves
+                # repo order, but we want stars-then-name to make the
+                # most popular Anthropic skill (typically pdf or
+                # docx) land at the top regardless of repo layout).
                 slim.sort(
                     key=lambda x: (
-                        _SOURCE_PRIORITY.get(x.get("source", ""), 9),
                         -(x.get("stars") or 0),
                         x.get("name", ""),
                     ),
                 )
                 slim = slim[: _MAX_RESULTS * 2]  # cap final list
+
+                # ── Cache search results so install() can recover from
+                # a bare-name fallback. Common failure mode this fixes:
+                # search returns 7 entries with full GitHub URL
+                # identifiers, agent renders bullet list using just the
+                # `name`, user replies "install slack-gif-creator" →
+                # agent calls install(identifier="slack-gif-creator")
+                # → not a valid GitHub URL → install fails.
+                # Now we look up the bare name in this cache and
+                # substitute the real identifier before invoking the
+                # backend installer.
+                #
+                # Latest-wins: full replace each search so stale entries
+                # from previous queries don't shadow current ones.
+                self._recent_searches = {}
+                for entry in slim:
+                    nm = (entry.get("name") or "").lower().strip()
+                    ident = entry.get("identifier")
+                    if nm and ident:
+                        self._recent_searches[nm] = entry
 
                 if not slim:
                     # Audit fix D: empty-everywhere → return a clear
@@ -402,9 +420,31 @@ class SkillInstallerTool(BaseTool):
                         success=False,
                         output="action=install requires the 'identifier' field (use action=search first).",
                     )
+
+                # ── Name → identifier fallback.
+                # If the LLM passes a bare name like "slack-gif-creator"
+                # but recent search returned that as `name` paired with
+                # a real install id (a GitHub URL, an `anthropic:`-
+                # prefixed id, etc), substitute the real id. Keep the
+                # raw `identifier` in case it IS a valid id (URLs,
+                # prefixed ids, etc. won't show up in the cache).
+                resolved = identifier.strip()
+                looks_like_url = "://" in resolved
+                looks_prefixed = ":" in resolved and not looks_like_url
+                looks_namespaced = "/" in resolved and not looks_like_url
+                if not (looks_like_url or looks_prefixed or looks_namespaced):
+                    cached = self._recent_searches.get(resolved.lower())
+                    if cached and cached.get("identifier"):
+                        resolved = cached["identifier"]
+                        logger.info(
+                            "manage_skill install: resolved bare name "
+                            "'%s' → '%s' (source=%s) via search cache",
+                            identifier, resolved, cached.get("source", "?"),
+                        )
+
                 try:
                     installed = await asyncio.wait_for(
-                        self._mgr.install(identifier),
+                        self._mgr.install(resolved),
                         timeout=_INSTALL_TIMEOUT,
                     )
                 except asyncio.TimeoutError:
@@ -413,9 +453,19 @@ class SkillInstallerTool(BaseTool):
                         output=(
                             f"Skill install timed out after {_INSTALL_TIMEOUT:.0f}s — "
                             f"the marketplace fetch (or `npx` first-run) is taking too long. "
-                            f"Try a different skill or marketplace (source='gemini'/'lobehub')."
+                            f"Try a different skill or run search again."
                         ),
                     )
+                except Exception as e:
+                    # If the install backend rejected the resolved
+                    # identifier and we DID re-route via cache, surface
+                    # both ids so the user can see what the agent tried.
+                    msg = (
+                        f"Install failed for '{identifier}'"
+                        + (f" (resolved to '{resolved}')" if resolved != identifier.strip() else "")
+                        + f": {type(e).__name__}: {e}"
+                    )
+                    return ToolResult(success=False, output=msg)
                 return ToolResult(
                     success=True,
                     output=json.dumps({
