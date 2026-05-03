@@ -146,6 +146,19 @@ async function main() {
       ? sdk.VisibilityType.VISIBILITY_TYPE_PRIVATE
       : 2;
 
+    // greenfield-js-sdk >= 1.2 requires an explicit auth context as the
+    // SECOND argument to createBucket so the SP-side Get-Approval round
+    // trip can be signed before simulate/broadcast. Old (<1.2) versions
+    // accepted just the params object and inferred ECDSA from the
+    // broadcast call's `privateKey` field. Without authType the SDK
+    // throws `authType is required` (assertAuthType in
+    // dist/cjs/index.js) before the tx ever leaves the process — which
+    // is the failure mode we hit when first wiring up production.
+    const pkPrefixed = PRIVATE_KEY.startsWith("0x")
+      ? PRIVATE_KEY
+      : `0x${PRIVATE_KEY}`;
+    const authType = { type: "ECDSA", privateKey: pkPrefixed };
+
     const createBucketTx = await client.bucket.createBucket({
       bucketName: BUCKET_NAME,
       creator: address,
@@ -153,7 +166,7 @@ async function main() {
       visibility: VISIBILITY_PRIVATE,
       chargedReadQuota: Long.fromInt(0),
       paymentAddress: address,
-    });
+    }, authType);
 
     // Simulate
     console.log("   Simulating transaction...");
