@@ -126,10 +126,17 @@ ENV NODE_PATH=/usr/lib/node_modules
 # time error, not a silent drift.
 COPY packages/sdk/package.json      /tmp/gnfd-deps/package.json
 COPY packages/sdk/package-lock.json /tmp/gnfd-deps/package-lock.json
+# Important: walk OUT of /tmp/gnfd-deps before deleting it. The previous
+# rev did `rm -rf /tmp/gnfd-deps && npm cache clean` while still cd'd
+# inside that directory; the npm process inherited the now-dangling cwd
+# and crashed with `ENOENT: no such file or directory, uv_cwd` when it
+# tried to read `process.cwd()` during boot. The `cd /` puts the
+# subsequent commands somewhere stable.
 RUN cd /tmp/gnfd-deps \
  && npm ci --omit=dev --no-audit --no-fund \
  && mkdir -p /usr/lib/node_modules \
  && cp -r /tmp/gnfd-deps/node_modules/. /usr/lib/node_modules/ \
+ && cd / \
  && rm -rf /tmp/gnfd-deps \
  && npm cache clean --force \
  && node -e "console.log('greenfield-js-sdk:', require.resolve('@bnb-chain/greenfield-js-sdk'))" \
