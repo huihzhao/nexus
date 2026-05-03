@@ -399,6 +399,39 @@
                        Foreground="{StaticResource ErrorBrush}" FontSize="11"
                        TextWrapping="Wrap"/>
 
+            <!-- Sync-status strip above the chat input. Always visible
+                 (even when the right-rail Brain panel is collapsed) so
+                 the user gets an at-a-glance signal that their writes
+                 are landing. Stays subtle when healthy; turns warning-
+                 coloured when degraded so it can't be missed.
+                 Bound to OverallStatus so any of the existing fault
+                 states (degraded / daemon down / busy) light it up. -->
+            <Border IsVisible="{Binding Cognition.Brain.Health.OverallStatus,
+                                Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                    Padding="8,4" CornerRadius="4"
+                    Background="{StaticResource SurfaceMutedBrush}"
+                    Margin="0,0,0,4">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <Ellipse Width="6" Height="6"
+                         VerticalAlignment="Center"
+                         Fill="{Binding Cognition.Brain.Health.GreenfieldReady,
+                                Converter={x:Static local:DriftFillConverter.Instance},
+                                ConverterParameter=invert}"/>
+                <TextBlock Text="{Binding Cognition.Brain.Health.OverallStatus}"
+                           FontSize="10" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextSecondaryBrush}"
+                           VerticalAlignment="Center"/>
+                <TextBlock Text="·"
+                           FontSize="10"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding Cognition.Brain.Health.QueueLabel}"
+                           FontSize="10"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           VerticalAlignment="Center"/>
+              </StackPanel>
+            </Border>
+
             <DockPanel>
               <Button DockPanel.Dock="Left" Content="📎"
                       Command="{Binding AttachFilesCommand}"
@@ -535,9 +568,18 @@
                                      Stroke="{StaticResource DividerBrush}"
                                      StrokeThickness="1"
                                      IsVisible="{Binding !DotMirrored}"/>
+                            <!-- Anchored dot: green when fully synced,
+                                 amber when this namespace has drifted
+                                 past its last on-chain anchor (>1h
+                                 since last_anchor_at AND there's been
+                                 a more recent local commit). The fill
+                                 binding picks the brush via
+                                 DriftFillConverter. -->
                             <Ellipse Width="5" Height="5"
-                                     Fill="{StaticResource SuccessBrush}"
-                                     IsVisible="{Binding DotAnchored}"/>
+                                     Fill="{Binding IsDrifted,
+                                            Converter={x:Static local:DriftFillConverter.Instance}}"
+                                     IsVisible="{Binding DotAnchored}"
+                                     ToolTip.Tip="Anchored — yellow means commits have outpaced the last on-chain anchor"/>
                             <Ellipse Width="5" Height="5"
                                      Stroke="{StaticResource DividerBrush}"
                                      StrokeThickness="1"
@@ -1347,8 +1389,117 @@
                                    IsVisible="{Binding DegradedReason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
                       </StackPanel>
                     </Border>
+
+                    <!-- BSC anchor failure banner — same shape as the
+                         Greenfield one. Was previously a silent fail:
+                         bsc dot stayed solid green even when every
+                         anchor was reverting (RPC down, gas exhausted,
+                         nonce stuck). -->
+                    <Border IsVisible="{Binding BscFailureActive}"
+                            Padding="8,6" CornerRadius="6"
+                            BorderBrush="{StaticResource ErrorBrush}"
+                            BorderThickness="1"
+                            Margin="0,4,0,0">
+                      <StackPanel Spacing="2">
+                        <TextBlock Text="BSC anchor failed — local-only state"
+                                   FontSize="10" FontWeight="SemiBold"
+                                   Foreground="{StaticResource ErrorBrush}"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding BscDegradedReason}"
+                                   FontSize="10"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   TextWrapping="Wrap"
+                                   IsVisible="{Binding BscDegradedReason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                      </StackPanel>
+                    </Border>
+
+                    <!-- WAL-stuck soft-warning banner. Renders when the
+                         oldest pending write has been queued for more
+                         than ~1 minute AND nothing has explicitly
+                         failed yet. Catches the slow-leak scenario
+                         where the daemon is alive but writes don't
+                         drain — easy to miss without per-entry age. -->
+                    <Border IsVisible="{Binding WalIsStuck}"
+                            Padding="8,6" CornerRadius="6"
+                            BorderBrush="{StaticResource WarningBrush}"
+                            BorderThickness="1"
+                            Margin="0,4,0,0">
+                      <StackPanel Spacing="2">
+                        <TextBlock Text="Writes piling up — pipeline lagging"
+                                   FontSize="10" FontWeight="SemiBold"
+                                   Foreground="{StaticResource WarningBrush}"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding WalStuckCaption}"
+                                   FontSize="10"
+                                   FontFamily="Menlo, Consolas, monospace"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   TextWrapping="Wrap"/>
+                      </StackPanel>
+                    </Border>
                   </StackPanel>
                 </Border>
+
+                <!-- ─────────────────────────────────────────────────
+                     CHAIN OPERATIONS LOG (Section 6) — recent
+                     greenfield/BSC operations with status. Replaces
+                     "SSH to server + SELECT from twin_chain_events"
+                     for any operator wanting to see what happened.
+                     ───────────────────────────────────────────────── -->
+                <TextBlock Text="CHAIN OPERATIONS"
+                           FontSize="9" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           Margin="0,8,0,0"
+                           IsVisible="{Binding Cognition.Brain.ChainEvents.Count}"/>
+                <ItemsControl ItemsSource="{Binding Cognition.Brain.ChainEvents}"
+                              IsVisible="{Binding Cognition.Brain.ChainEvents.Count}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Padding="8,5" CornerRadius="6"
+                              Background="{StaticResource SurfaceCardBrush}"
+                              Margin="0,0,0,4">
+                        <Grid ColumnDefinitions="Auto,*,Auto">
+                          <!-- Status dot: green / amber / red — picks
+                               brush via name lookup against the row's
+                               StatusColorKey ("Success" / "Warning" /
+                               "Error"). The static StatusColorConverter
+                               instance is queried on-the-fly so we
+                               don't need an App.axaml resource entry. -->
+                          <Ellipse Grid.Column="0" Width="6" Height="6"
+                                   Margin="0,0,8,0"
+                                   VerticalAlignment="Center"
+                                   Fill="{Binding StatusColorKey,
+                                          Converter={x:Static local:StatusColorConverter.Instance}}"/>
+                          <StackPanel Grid.Column="1" Spacing="1">
+                            <Grid ColumnDefinitions="Auto,*">
+                              <TextBlock Grid.Column="0"
+                                         Text="{Binding KindLabel}"
+                                         FontSize="10" FontWeight="SemiBold"
+                                         Foreground="{StaticResource TextPrimaryBrush}"
+                                         Margin="0,0,6,0"/>
+                              <TextBlock Grid.Column="1"
+                                         Text="{Binding Summary}"
+                                         FontSize="10"
+                                         Foreground="{StaticResource TextSecondaryBrush}"
+                                         TextTrimming="CharacterEllipsis"/>
+                            </Grid>
+                            <TextBlock Text="{Binding Error}"
+                                       IsVisible="{Binding HasError}"
+                                       FontSize="9"
+                                       FontFamily="Menlo, Consolas, monospace"
+                                       Foreground="{StaticResource TextTertiaryBrush}"
+                                       TextWrapping="Wrap"/>
+                          </StackPanel>
+                          <TextBlock Grid.Column="2"
+                                     Text="{Binding TimeAgo}"
+                                     FontSize="10"
+                                     Foreground="{StaticResource TextTertiaryBrush}"
+                                     VerticalAlignment="Top"
+                                     Margin="8,0,0,0"/>
+                        </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
 
                 <!-- Recent anchors mini-list (top 3) — keeps the
                      auditable per-anchor detail (state-root hash + tx)

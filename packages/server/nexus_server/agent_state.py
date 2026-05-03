@@ -748,18 +748,33 @@ class ChainHealthCard(BaseModel):
     last_daemon_ok: Optional[float] = None
     greenfield_ready: bool = False
     bsc_ready: bool = False
-    # Fallback-aware fields, added after the agent #985 incident where
-    # every Greenfield write silently fell back to local cache and the
-    # desktop card stayed solid green. ``fallback_active`` is True iff
-    # a Greenfield→local fallback happened in the last ~5 min;
-    # ``last_write_error`` carries the human-readable reason so the
-    # desktop tooltip can show "Cannot find module …" etc. directly
-    # instead of forcing the operator into the server logs.
-    #
-    # Both default to None / False so older server builds that don't
-    # populate them still produce valid responses.
+    # Greenfield-side observability fields, added after the agent #985
+    # incident where every Greenfield write silently fell back to local
+    # cache and the desktop card stayed solid green. ``fallback_active``
+    # is True iff a Greenfield→local fallback happened in the last
+    # ~5 min; ``last_write_error`` carries the human-readable reason
+    # so the desktop tooltip can show "Cannot find module …" etc.
+    # directly instead of forcing the operator into the server logs.
     fallback_active: bool = False
     last_write_error: Optional[dict] = None
+    # BSC-side counterparts to fallback_active / last_write_error.
+    # Same silent-failure class as Greenfield: previously bsc_ready was
+    # `chain_client is not None`, so the dot stayed green even while
+    # every anchor call was reverting (RPC down, nonce stuck, gas
+    # exhausted). Now bsc_ready flips false on a recent failure and
+    # last_bsc_anchor_error carries the reason.
+    bsc_failure_active: bool = False
+    last_bsc_anchor_error: Optional[dict] = None
+    # WAL longevity. ``wal_queue_size`` alone is misleading: it tells
+    # you HOW MANY writes are pending but not HOW LONG. A WAL with one
+    # 12-hour-old entry is a real problem; the same count from a 3-sec
+    # backpressure spike is not. Surface the oldest entry's age + path
+    # so the desktop can show "3 writes stuck for >6 min — oldest is
+    # agents/.../session_xyz.json".
+    wal_oldest_age_seconds: Optional[float] = None
+    wal_oldest_pending_path: Optional[str] = None
+    # All new fields default to safe values so older server builds
+    # (without these keys in chain_health_snapshot) still deserialize.
 
 
 class ChainStatusResponse(BaseModel):
@@ -846,6 +861,88 @@ async def get_chain_status(
         namespaces=rows,
         health=ChainHealthCard(**health_dict),
     )
+
+
+# ── Chain operations log — every Greenfield/BSC attempt with status ──
+
+
+class ChainEvent(BaseModel):
+    """One row from ``twin_chain_events``.
+
+    Statuses (set by twin_manager._ChainActivityLogHandler from log
+    line regexes):
+      * ``ok``        — the write actually landed on chain.
+      * ``degraded``  — local cache hit but chain didn't (Greenfield
+                        bucket missing, RPC slow, etc). Data isn't
+                        lost, but it isn't anchored either.
+      * ``failed``    — neither chain nor local fallback succeeded.
+
+    The desktop's chain log panel renders these three differently
+    (green / amber / red) so the operator can audit recent activity
+    without SSH-ing into the server to query the SQLite table.
+    """
+    kind: str          # "greenfield_put" | "bsc_anchor"
+    status: str        # "ok" | "degraded" | "failed"
+    summary: str = ""
+    tx_hash: Optional[str] = None
+    content_hash: Optional[str] = None
+    object_path: Optional[str] = None
+    error: Optional[str] = None
+    duration_ms: Optional[int] = None
+    created_at: str = ""
+
+
+class ChainEventsResponse(BaseModel):
+    events: list[ChainEvent]
+    total_returned: int
+
+
+@router.get("/chain_events", response_model=ChainEventsResponse)
+async def get_chain_events(
+    limit: int = 20,
+    current_user: str = Depends(get_current_user),
+) -> ChainEventsResponse:
+    """Recent chain operations for this user, newest first.
+
+    Used by the desktop's "Chain Operations" log to show the last N
+    Greenfield PUTs / BSC anchors with their status. Replaces the old
+    workflow of "SSH to the server and SELECT from twin_chain_events"
+    every time something looks off.
+
+    Limit is capped at 200 so a runaway request can't ask for the whole
+    table — that's what /admin tools are for.
+    """
+    from nexus_server.database import get_db_connection
+    capped = max(1, min(int(limit or 20), 200))
+    rows: list[ChainEvent] = []
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT kind, status, summary, tx_hash, content_hash,
+                       object_path, error, duration_ms, created_at
+                FROM twin_chain_events
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (current_user, capped),
+            )
+            for r in cursor.fetchall():
+                rows.append(ChainEvent(
+                    kind=r[0] or "",
+                    status=r[1] or "",
+                    summary=r[2] or "",
+                    tx_hash=r[3],
+                    content_hash=r[4],
+                    object_path=r[5],
+                    error=r[6],
+                    duration_ms=r[7],
+                    created_at=r[8] or "",
+                ))
+    except Exception as e:
+        logger.warning("chain_events read failed: %s", e)
+    return ChainEventsResponse(events=rows, total_returned=len(rows))
 
 
 # ── Phase O.5: Evolution timeline (BEP-Nexus §3.4) ──────────────────

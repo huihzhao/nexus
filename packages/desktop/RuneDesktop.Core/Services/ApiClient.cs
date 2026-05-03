@@ -795,6 +795,22 @@ public class ApiClient
         catch { return null; }
     }
 
+    /// <summary>
+    /// Brain panel: recent chain operations log (Greenfield PUTs +
+    /// BSC anchors with status ok/degraded/failed). Backs the
+    /// "Chain Operations" list in the right rail so operators can
+    /// audit recent activity without SSH-ing to the server. Polled
+    /// alongside chain_status; cap at ~20 rows so the polling
+    /// payload stays small.
+    /// </summary>
+    public async Task<ChainEventsResponse?> GetChainEventsAsync(int limit = 20)
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/chain_events?limit={limit}";
+        try { return await GetWithRetryAsync<ChainEventsResponse>(url); }
+        catch { return null; }
+    }
+
     /// <summary>Brain panel: 7-day timeline + just-learned feed +
     /// data-flow snapshot. Polled every ~10s (Phase D 续 / #159).</summary>
     public async Task<LearningSummaryResponse?> GetLearningSummaryAsync(string window = "7d")

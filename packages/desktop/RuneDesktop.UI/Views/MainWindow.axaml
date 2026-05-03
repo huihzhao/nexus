@@ -198,5 +198,37 @@
                         DataContext="{Binding ChatVm}"/>
       </Grid>
     </Panel>
+
+    <!-- Chain-degradation toast. Floats top-right above the content
+         row when ToastVisible flips true. Self-clears after 8s via the
+         DispatcherTimer in MainViewModel.OnChainDegradation. The
+         visible→hidden transition is binding-driven so we don't need
+         a behavior or animation. -->
+    <Border Grid.Row="1"
+            IsVisible="{Binding ToastVisible}"
+            HorizontalAlignment="Right" VerticalAlignment="Top"
+            Margin="0,16,16,0"
+            Padding="14,10" CornerRadius="8"
+            Background="{StaticResource SurfaceCardBrush}"
+            BorderBrush="{StaticResource WarningBrush}"
+            BorderThickness="1"
+            MaxWidth="380"
+            BoxShadow="0 4 14 0 #66000000">
+      <StackPanel Orientation="Horizontal" Spacing="10">
+        <TextBlock Text="⚠"
+                   FontSize="16"
+                   Foreground="{StaticResource WarningBrush}"
+                   VerticalAlignment="Top"/>
+        <StackPanel Spacing="2" MaxWidth="320">
+          <TextBlock Text="Chain sync degraded"
+                     FontSize="12" FontWeight="SemiBold"
+                     Foreground="{StaticResource TextPrimaryBrush}"/>
+          <TextBlock Text="{Binding ToastMessage}"
+                     FontSize="11"
+                     Foreground="{StaticResource TextSecondaryBrush}"
+                     TextWrapping="Wrap"/>
+        </StackPanel>
+      </StackPanel>
+    </Border>
   </Grid>
 </Window>

@@ -39,6 +39,17 @@ public partial class MainViewModel : ObservableObject
     /// gear icon on the login screen to reconfigure.</summary>
     [ObservableProperty] private bool _showWelcome;
 
+    /// <summary>
+    /// One-shot toast bubble for fallback / degradation notifications.
+    /// Shown when ToastMessage is non-empty; auto-clears after a few
+    /// seconds (handled in axaml). Wired up to ChainHealthViewModel's
+    /// DegradationStarted event so the user gets an in-your-face notice
+    /// the FIRST time Greenfield writes start falling back, instead of
+    /// only seeing it if they happen to be looking at the Brain panel.
+    /// </summary>
+    [ObservableProperty] private string? _toastMessage;
+    [ObservableProperty] private bool _toastVisible;
+
     /// <summary>First grapheme of the display name, used for the avatar
     /// pill in the top-right corner. Returns "?" when no profile.</summary>
     public string UserInitial => string.IsNullOrEmpty(UserName)
@@ -100,6 +111,14 @@ public partial class MainViewModel : ObservableObject
         // Gear icon on the Login screen → re-open the Welcome wizard.
         LoginVm.OpenSettingsRequested += (_, _) => OpenWelcome();
 
+        // Hook the chain-degradation event so we get an in-app toast
+        // the FIRST time Greenfield/BSC writes start falling back —
+        // covers the "user typing in chat doesn't notice the right-rail
+        // banner" failure mode that broke trust during the agent #985
+        // incident. The Brain VM dedups (latches), so this fires once
+        // per outage and re-arms when writes recover.
+        ChatVm.Cognition.Brain.Health.DegradationStarted += OnChainDegradation;
+
         // When the rail picks a session (or creates a new one), tell
         // the chat surface to refresh history filtered by that id.
         // Best-effort — a slow load doesn't block the UI thread.
@@ -107,6 +126,25 @@ public partial class MainViewModel : ObservableObject
         {
             _ = ChatVm.SwitchSessionAsync(sessionId);
         };
+    }
+
+    private void OnChainDegradation(string reason)
+    {
+        // Marshal onto the UI thread — the event source is a polling
+        // timer on the thread pool. Without this the binding update
+        // can hit the dispatcher off-thread and Avalonia complains.
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            ToastMessage = reason;
+            ToastVisible = true;
+            // Auto-hide after 8 seconds. We re-arm via the rising-edge
+            // latch in ChainHealthViewModel, so a long-running outage
+            // doesn't keep popping new toasts every refresh — only the
+            // first transition triggers one.
+            _ = Avalonia.Threading.DispatcherTimer.RunOnce(
+                () => { ToastVisible = false; },
+                System.TimeSpan.FromSeconds(8));
+        });
     }
 
     private async void OnLoginSuccess(object? sender, LoginViewModel.LoginSuccessArgs e)

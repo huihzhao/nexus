@@ -581,6 +581,16 @@ _RE_GF_FALLBACK = _re.compile(
     r"reason=(?P<reason>.+)"
 )
 _RE_GF_FAIL = _re.compile(r"Greenfield (?:put|get) failed: (?P<error>.+)")
+# BSC anchor failure — emitted by chain.py's `_anchor_state_root`
+# except branch. Same shape philosophy as _RE_GF_FALLBACK: structured
+# fields so we can record a `degraded` chain event with the actual
+# revert reason instead of just a generic warning. Without this, BSC
+# failures were utterly invisible to the desktop UI — same silent-fail
+# class as the Greenfield bug fixed in the previous pass.
+_RE_BSC_FAIL = _re.compile(
+    r"\[FALLBACK\]\[BSC\] Anchor failed for (?P<agent>[\w-]+) "
+    r"agent=\S+ hash=(?P<hash>[0-9a-fA-F]+) reason=(?P<reason>.+)"
+)
 
 
 def _user_id_for_agent(agent_id_str: str) -> Optional[str]:
@@ -694,6 +704,26 @@ class _ChainActivityLogHandler(logging.Handler):
                         tx_hash=m.group("tx"),
                         content_hash=m.group("hash"),
                         duration_ms=duration_ms,
+                    )
+                return
+
+            # BSC anchor failure: same dispatch logic as the OK branch,
+            # but records `status=failed` so the desktop's chain-events
+            # log can render the row in red. Try the FAIL pattern AFTER
+            # the OK pattern (OK is the common path — checking it first
+            # is a tiny perf win; the regexes are mutually exclusive).
+            m = _RE_BSC_FAIL.search(msg)
+            if m:
+                uid = _user_id_for_agent(m.group("agent"))
+                if uid:
+                    self._last_user = uid
+                    _record_chain_event(
+                        uid,
+                        kind="bsc_anchor",
+                        status="failed",
+                        summary="BSC anchor reverted — local fallback only",
+                        content_hash=m.group("hash"),
+                        error=m.group("reason"),
                     )
                 return
             m = _RE_GF_PUT_OK.search(msg)

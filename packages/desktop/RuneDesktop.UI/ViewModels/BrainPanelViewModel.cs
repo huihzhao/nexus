@@ -51,11 +51,16 @@ public partial class NamespaceGlanceViewModel : ObservableObject
     public int ActiveCount { get; }              // 2 (sessions / open versions)
     public string ChainStatus { get; }           // local | mirrored | anchored
     public string? Version { get; }              // "v0042" for persona
+    // Drift detection — see IsDrifted below. Optional because older
+    // server builds don't populate them.
+    public double? LastCommitAt { get; }
+    public double? LastAnchorAt { get; }
 
     public NamespaceGlanceViewModel(
         string name, int count, int deltaToday,
         string chainStatus, string? version,
-        int deltaThisWeek = 0, int activeCount = 0)
+        int deltaThisWeek = 0, int activeCount = 0,
+        double? lastCommitAt = null, double? lastAnchorAt = null)
     {
         Name = name;
         DisplayName = char.ToUpperInvariant(name[0]) + name[1..];
@@ -65,6 +70,8 @@ public partial class NamespaceGlanceViewModel : ObservableObject
         ActiveCount = activeCount;
         ChainStatus = chainStatus;
         Version = version;
+        LastCommitAt = lastCommitAt;
+        LastAnchorAt = lastAnchorAt;
     }
 
     /// <summary>The big number / version label shown on the card.
@@ -101,6 +108,41 @@ public partial class NamespaceGlanceViewModel : ObservableObject
     /// <summary>Chain status dot 3: anchored.</summary>
     public bool DotAnchored =>
         string.Equals(ChainStatus, "anchored", StringComparison.OrdinalIgnoreCase);
+
+    // How long an "anchored" namespace can sit without a fresh anchor
+    // before we consider it drifted. One hour matches the default
+    // anchor cadence — anything older means the BSC anchor pipeline is
+    // probably stuck.
+    private const double DriftThresholdSeconds = 3600;
+
+    /// <summary>
+    /// True iff this namespace's local commits have outpaced its
+    /// last-known on-chain anchor by more than ~1 hour.
+    ///
+    /// Without this, a namespace stuck in "mirrored" forever (data on
+    /// Greenfield but never re-anchored on BSC) renders identically to
+    /// a healthy "anchored" one because the third dot is binary. The
+    /// desktop's namespace card binds to IsDrifted to switch the dot
+    /// from green → amber, so operators get a visual cue that the
+    /// chain pipeline is degraded for that specific namespace even if
+    /// the global Chain Health card looks fine.
+    /// </summary>
+    public bool IsDrifted
+    {
+        get
+        {
+            if (LastCommitAt is null) return false;
+            // Mirrored-but-never-anchored within the threshold: drifted.
+            if (LastAnchorAt is null)
+            {
+                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                return (now - LastCommitAt.Value) > DriftThresholdSeconds;
+            }
+            // Anchored, but last anchor predates last commit by more
+            // than the threshold: drifted.
+            return (LastCommitAt.Value - LastAnchorAt.Value) > DriftThresholdSeconds;
+        }
+    }
 }
 
 // ── Timeline row (Section 2) ─────────────────────────────────────────
@@ -239,6 +281,73 @@ public partial class JustLearnedItemViewModel : ObservableObject
         string.Equals(ChainStatus, "anchored", StringComparison.OrdinalIgnoreCase);
 }
 
+// ── Chain operation log row (Section 6: operations history) ─────────
+
+/// <summary>
+/// Display-side wrapper for a <c>ChainEvent</c>. Pre-formats the
+/// timestamp + status colour key so the XAML doesn't need value
+/// converters for the common cases.
+/// </summary>
+public partial class ChainEventViewModel : ObservableObject
+{
+    public string Kind { get; }              // "greenfield_put" | "bsc_anchor"
+    public string Status { get; }            // "ok" | "degraded" | "failed"
+    public string Summary { get; }
+    public string? Error { get; }
+    public string? ObjectPath { get; }
+    public string TimeAgo { get; }
+    public int? DurationMs { get; }
+
+    public ChainEventViewModel(ChainEvent src)
+    {
+        Kind = src.Kind ?? "";
+        Status = src.Status ?? "";
+        Summary = src.Summary ?? "";
+        Error = src.Error;
+        ObjectPath = src.ObjectPath;
+        DurationMs = src.DurationMs;
+        TimeAgo = FormatTimeAgo(src.CreatedAt);
+    }
+
+    /// <summary>Compact "kind" label for the leftmost column —
+    /// "Greenfield" or "BSC" instead of the underscore-cased internal
+    /// name.</summary>
+    public string KindLabel => Kind switch
+    {
+        "greenfield_put" => "Greenfield",
+        "bsc_anchor"     => "BSC",
+        _                => Kind,
+    };
+
+    /// <summary>Status colour key for value-converter dispatch in XAML.
+    /// Maps to SuccessBrush / WarningBrush / ErrorBrush respectively.</summary>
+    public string StatusColorKey => Status switch
+    {
+        "ok"       => "Success",
+        "degraded" => "Warning",
+        "failed"   => "Error",
+        _          => "Tertiary",
+    };
+
+    /// <summary>True iff this row represents a non-OK outcome — the
+    /// XAML uses this to show the error column.</summary>
+    public bool HasError =>
+        !string.IsNullOrEmpty(Error)
+        || string.Equals(Status, "failed", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Status, "degraded", StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatTimeAgo(string iso)
+    {
+        if (string.IsNullOrEmpty(iso)) return "";
+        if (!DateTimeOffset.TryParse(iso, out var dt)) return iso;
+        var delta = DateTimeOffset.UtcNow - dt;
+        if (delta.TotalSeconds < 60) return $"{(int)delta.TotalSeconds}s ago";
+        if (delta.TotalMinutes < 60) return $"{(int)delta.TotalMinutes}m ago";
+        if (delta.TotalHours < 24)   return $"{(int)delta.TotalHours}h ago";
+        return $"{(int)delta.TotalDays}d ago";
+    }
+}
+
 // ── Chain Health card (Section 5) ────────────────────────────────────
 
 public partial class ChainHealthViewModel : ObservableObject
@@ -255,6 +364,33 @@ public partial class ChainHealthViewModel : ObservableObject
     [ObservableProperty] private bool _fallbackActive;
     [ObservableProperty] private string? _lastWriteErrorMessage;
     [ObservableProperty] private string? _lastWriteErrorPath;
+    // BSC anchor counterparts. Same observability story as the
+    // Greenfield ones — BSC anchor failures used to be silent (only a
+    // server-side WARNING log line; bsc_ready stayed True). Now we
+    // expose the failure state + reason so the desktop's Chain Health
+    // banner can render them with a banner just like Greenfield does.
+    [ObservableProperty] private bool _bscFailureActive;
+    [ObservableProperty] private string? _lastBscAnchorErrorMessage;
+    // WAL longevity. WalStuckSeconds + path let the desktop render
+    // "3 writes stuck for >6 min — oldest is agents/.../session.json"
+    // as a third tier of degradation between healthy and full failure.
+    [ObservableProperty] private double _walStuckSeconds;
+    [ObservableProperty] private string? _walOldestPendingPath;
+
+    /// <summary>
+    /// Raised the first time FallbackActive or BscFailureActive flips
+    /// from false → true. The MainViewModel subscribes to this and
+    /// shows a one-shot toast so the user notices a degradation even
+    /// if they're not staring at the Chain Health card. Re-arms after
+    /// each return to healthy, so a new outage gets a new toast.
+    ///
+    /// Argument is the reason text the toast should display.
+    /// </summary>
+    public event Action<string>? DegradationStarted;
+
+    // Latch so we only fire DegradationStarted on the rising edge.
+    // Re-armed once both fallback flags are false again.
+    private bool _previouslyDegraded;
 
     public string OverallStatus
     {
@@ -271,14 +407,24 @@ public partial class ChainHealthViewModel : ObservableObject
     {
         get
         {
-            // When fallback is active, the WAL count alone is misleading:
-            // 0 reads as "all writes synced" but they're really sitting
-            // in the local cache, NOT on Greenfield. Show the truth.
-            if (FallbackActive)
+            // When either fallback path is active, WAL count alone is
+            // misleading: 0 reads as "all writes synced" but they're
+            // really sitting in the local cache, NOT on Greenfield/BSC.
+            // Show the truth.
+            if (FallbackActive || BscFailureActive)
             {
                 return WalQueueSize == 0
                     ? "writes degraded — local-only"
                     : $"{WalQueueSize} writes pending — local-only";
+            }
+            // WAL has been backed up for a while — surface that even
+            // before either side flips to fully degraded. Soft-warning
+            // ("X writes pending for Ym") so the user knows about a
+            // slow leak before it becomes a full outage.
+            if (WalStuckSeconds > 60 && WalQueueSize > 0)
+            {
+                var minutes = Math.Round(WalStuckSeconds / 60.0);
+                return $"{WalQueueSize} writes pending for {minutes:0}m";
             }
             return WalQueueSize switch
             {
@@ -290,9 +436,8 @@ public partial class ChainHealthViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Human-friendly summary of the most recent write failure for the
-    /// detail tooltip / banner. Empty when there's no recorded failure.
-    /// Format: "<path> — <reason>" or just the reason if path missing.
+    /// Human-friendly Greenfield-side reason for the detail banner.
+    /// Format: "<path> — <reason>" (path may be empty).
     /// </summary>
     public string DegradedReason
     {
@@ -306,6 +451,37 @@ public partial class ChainHealthViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Human-friendly BSC anchor failure reason (revert message, RPC
+    /// error, etc.). Bound by the BSC failure banner in axaml.
+    /// </summary>
+    public string BscDegradedReason => LastBscAnchorErrorMessage ?? "";
+
+    /// <summary>
+    /// True iff the WAL has the oldest pending entry stuck for longer
+    /// than 1 minute AND the system isn't already showing the harder
+    /// "fallback active" banner. This is the soft-warn tier — useful
+    /// when nothing has explicitly failed but the queue isn't draining.
+    /// </summary>
+    public bool WalIsStuck =>
+        WalStuckSeconds > 60 && !FallbackActive && !BscFailureActive;
+
+    /// <summary>
+    /// Caption for the WAL-stuck banner. Includes the oldest path so
+    /// operators know where to look.
+    /// </summary>
+    public string WalStuckCaption
+    {
+        get
+        {
+            if (!WalIsStuck) return "";
+            var minutes = Math.Round(WalStuckSeconds / 60.0);
+            if (!string.IsNullOrEmpty(WalOldestPendingPath))
+                return $"oldest pending {minutes:0}m: {WalOldestPendingPath}";
+            return $"oldest pending {minutes:0}m";
+        }
+    }
+
     public void Apply(ChainHealthCard h)
     {
         WalQueueSize = h.WalQueueSize;
@@ -313,6 +489,9 @@ public partial class ChainHealthViewModel : ObservableObject
         GreenfieldReady = h.GreenfieldReady;
         BscReady = h.BscReady;
         FallbackActive = h.FallbackActive;
+        BscFailureActive = h.BscFailureActive;
+        WalStuckSeconds = h.WalOldestAgeSeconds ?? 0.0;
+        WalOldestPendingPath = h.WalOldestPendingPath;
 
         // last_write_error is shaped {path, content_hash, error, at}
         // on the wire — pull the pieces we want for display. Be lenient
@@ -333,9 +512,43 @@ public partial class ChainHealthViewModel : ObservableObject
             }
         }
 
+        // BSC anchor error is shaped {agent_id, content_hash, error, at}.
+        LastBscAnchorErrorMessage = null;
+        if (h.LastBscAnchorError is { } lbe
+            && lbe.TryGetValue("error", out var bErrEl)
+            && bErrEl.ValueKind == System.Text.Json.JsonValueKind.String)
+        {
+            LastBscAnchorErrorMessage = bErrEl.GetString();
+        }
+
+        // Toast plumbing: rising-edge detection. If we just transitioned
+        // from "fully healthy" to "any kind of degraded", fire a one-shot
+        // event with a reason string so MainViewModel can pop a toast.
+        // Without this, users would need to be looking at the Brain
+        // panel to notice anything is wrong — exactly the failure mode
+        // the agent #985 incident exposed.
+        var nowDegraded = FallbackActive || BscFailureActive;
+        if (nowDegraded && !_previouslyDegraded)
+        {
+            string reason;
+            if (FallbackActive && !string.IsNullOrEmpty(LastWriteErrorMessage))
+                reason = $"Greenfield writes degraded: {LastWriteErrorMessage}";
+            else if (BscFailureActive && !string.IsNullOrEmpty(LastBscAnchorErrorMessage))
+                reason = $"BSC anchor failed: {LastBscAnchorErrorMessage}";
+            else if (FallbackActive)
+                reason = "Greenfield writes have fallen back to local cache";
+            else
+                reason = "BSC anchoring is currently unavailable";
+            DegradationStarted?.Invoke(reason);
+        }
+        _previouslyDegraded = nowDegraded;
+
         OnPropertyChanged(nameof(OverallStatus));
         OnPropertyChanged(nameof(QueueLabel));
         OnPropertyChanged(nameof(DegradedReason));
+        OnPropertyChanged(nameof(BscDegradedReason));
+        OnPropertyChanged(nameof(WalIsStuck));
+        OnPropertyChanged(nameof(WalStuckCaption));
     }
 }
 
@@ -353,6 +566,14 @@ public partial class BrainPanelViewModel : ObservableObject
     public ObservableCollection<DataFlowStageViewModel> DataFlow { get; } = new();
     public ObservableCollection<JustLearnedItemViewModel> JustLearned { get; } = new();
     public ChainHealthViewModel Health { get; } = new();
+    /// <summary>
+    /// Recent chain operations (newest first), backing the right-rail
+    /// "Chain Operations" log. Populated by RefreshAsync from
+    /// /api/v1/agent/chain_events. The same data was previously only
+    /// reachable via SQLite query on the server, which made
+    /// post-mortem on a sync issue effectively SSH-only.
+    /// </summary>
+    public ObservableCollection<ChainEventViewModel> ChainEvents { get; } = new();
 
     // ── Section 2 line-chart geometry (#159 v3) ─────────────────────────
     //
@@ -423,10 +644,12 @@ public partial class BrainPanelViewModel : ObservableObject
         {
             var chainTask = _api.GetChainStatusAsync();
             var learningTask = _api.GetLearningSummaryAsync("7d");
-            await Task.WhenAll(chainTask, learningTask);
+            var eventsTask = _api.GetChainEventsAsync(20);
+            await Task.WhenAll(chainTask, learningTask, eventsTask);
 
             var chain = await chainTask;
             var learning = await learningTask;
+            var events = await eventsTask;
 
             // Marshal the collection mutations onto the UI thread
             // — see method-level comment for why this matters.
@@ -434,6 +657,7 @@ public partial class BrainPanelViewModel : ObservableObject
             {
                 ApplyChain(chain);
                 ApplyLearning(learning);
+                ApplyChainEvents(events);
             });
         }
         catch (Exception e)
@@ -471,8 +695,24 @@ public partial class BrainPanelViewModel : ObservableObject
                 count: 0,                     // filled by ApplyLearning
                 deltaToday: 0,                // filled by ApplyLearning
                 chainStatus: ns?.Status ?? "local",
-                version: ns?.Version));
+                version: ns?.Version,
+                lastCommitAt: ns?.LastCommitAt,
+                lastAnchorAt: ns?.LastAnchorAt));
         }
+    }
+
+    /// <summary>
+    /// Replace the Chain Operations log with the latest server snapshot.
+    /// Keeps the collection bounded (server caps at 200, our request
+    /// caps at 20) so the right rail stays scrollable without paging.
+    /// Newest-first ordering is preserved from the server query.
+    /// </summary>
+    private void ApplyChainEvents(ChainEventsResponse? events)
+    {
+        if (events?.Events is null) return;
+        ChainEvents.Clear();
+        foreach (var e in events.Events)
+            ChainEvents.Add(new ChainEventViewModel(e));
     }
 
     private void ApplyLearning(LearningSummaryResponse? learning)
@@ -557,7 +797,9 @@ public partial class BrainPanelViewModel : ObservableObject
                     deltaThisWeek: weekly.GetValueOrDefault(card.Name, 0),
                     activeCount: 0,    // TODO: wire from session count
                     chainStatus: card.ChainStatus,
-                    version: card.Version);
+                    version: card.Version,
+                    lastCommitAt: card.LastCommitAt,
+                    lastAnchorAt: card.LastAnchorAt);
             }
         }
     }

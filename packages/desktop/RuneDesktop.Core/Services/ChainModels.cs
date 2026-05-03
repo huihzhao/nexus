@@ -572,13 +572,81 @@ public record ChainHealthCard
     // (`Cannot find module …`, `bucket nexus-agent-N unavailable`,
     // etc.) instead of forcing the user into the server logs.
     //
-    // Both nullable / default-false so older server builds (which
-    // don't emit these keys) still deserialize cleanly.
+    // All new fields are nullable / default-false so older server
+    // builds (which don't emit these keys) still deserialize cleanly.
     [JsonPropertyName("fallback_active")]
     public bool FallbackActive { get; init; }
 
     [JsonPropertyName("last_write_error")]
     public Dictionary<string, System.Text.Json.JsonElement>? LastWriteError { get; init; }
+
+    // BSC-side mirror of the Greenfield observability fields. Same
+    // silent-failure class: previously bsc_ready was just truthiness
+    // of the chain client; now it flips false on a recent anchor
+    // failure (revert, RPC down, gas exhausted) and the desktop can
+    // render the actual revert reason from LastBscAnchorError.
+    [JsonPropertyName("bsc_failure_active")]
+    public bool BscFailureActive { get; init; }
+
+    [JsonPropertyName("last_bsc_anchor_error")]
+    public Dictionary<string, System.Text.Json.JsonElement>? LastBscAnchorError { get; init; }
+
+    // WAL longevity. WalQueueSize alone tells you HOW MANY writes are
+    // pending but not HOW LONG. A 12-hour-old single entry is a real
+    // problem; the same count from a 3-second backpressure spike
+    // isn't. WalOldestAgeSeconds is the wait time of the oldest
+    // unsynced write; the desktop renders a warning once it exceeds
+    // ~1 minute.
+    [JsonPropertyName("wal_oldest_age_seconds")]
+    public double? WalOldestAgeSeconds { get; init; }
+
+    [JsonPropertyName("wal_oldest_pending_path")]
+    public string? WalOldestPendingPath { get; init; }
+}
+
+/// <summary>
+/// One row from the server's <c>twin_chain_events</c> table — a single
+/// Greenfield/BSC operation with its outcome. Surfaced in the
+/// desktop's "Chain Operations" log so the user can audit what
+/// actually happened recently without SSH-ing to the server.
+/// </summary>
+public record ChainEvent
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = "";
+
+    [JsonPropertyName("status")]
+    public string Status { get; init; } = "";
+
+    [JsonPropertyName("summary")]
+    public string Summary { get; init; } = "";
+
+    [JsonPropertyName("tx_hash")]
+    public string? TxHash { get; init; }
+
+    [JsonPropertyName("content_hash")]
+    public string? ContentHash { get; init; }
+
+    [JsonPropertyName("object_path")]
+    public string? ObjectPath { get; init; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+
+    [JsonPropertyName("duration_ms")]
+    public int? DurationMs { get; init; }
+
+    [JsonPropertyName("created_at")]
+    public string CreatedAt { get; init; } = "";
+}
+
+public record ChainEventsResponse
+{
+    [JsonPropertyName("events")]
+    public List<ChainEvent> Events { get; init; } = [];
+
+    [JsonPropertyName("total_returned")]
+    public int TotalReturned { get; init; }
 }
 
 public record ChainStatusResponse

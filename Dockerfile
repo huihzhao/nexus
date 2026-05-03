@@ -105,24 +105,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # below — and to the daemon's `node script.cjs` invocations at runtime.
 ENV NODE_PATH=/usr/lib/node_modules
 
-# Greenfield JS bridge deps. `npm install -g` puts them in NODE_PATH
-# above (/usr/lib/node_modules on Debian/Ubuntu Node images). The .cjs
-# scripts under /app/packages/sdk/scripts/ have no co-located
-# node_modules, so without NODE_PATH `require()` would fail.
+# Greenfield JS bridge deps — installed from packages/sdk/package.json
+# (+ lock file) rather than pinned by hand, so local dev and the
+# Docker image always agree on which @bnb-chain/greenfield-js-sdk
+# major and which ethers major are in use.
 #
-# Pinning versions because greenfield-js-sdk's API has shifted across
-# minor releases and the daemon's payload-shape probing doesn't cover
-# every permutation. Bump these together with a daemon test run.
+# Why this mattered in production: an earlier rev of this Dockerfile
+# pinned `@bnb-chain/greenfield-js-sdk@1.2.4 ethers@6.13.2`. Local dev
+# used `^2.2.2 / ^5.7.2` (per packages/sdk/package.json). The .cjs
+# scripts were written against the v2 API + ethers v5; running them
+# against v1 / ethers v6 produced a parade of cryptic errors —
+# `authType is required`, `Cannot read properties of undefined
+# (reading 'primarySpAddress')` — that all looked like "the script is
+# broken" but were really "the script's runtime is wrong". Driving
+# both environments off the SAME package.json is the only way to
+# stop this from happening again.
 #
-# The three trailing `node -e require.resolve(...)` calls are a
-# build-time gate — if any package didn't actually install, the build
-# fails here instead of silently shipping a broken image (which is how
-# the original "everything looks synced but no buckets exist" bug got
-# to production).
-RUN npm install -g --omit=dev \
-        @bnb-chain/greenfield-js-sdk@1.2.4 \
-        ethers@6.13.2 \
-        long@5.2.3 \
+# `npm ci` (vs `npm install`) refuses to fall back to resolution if
+# package-lock.json doesn't match — so a stale lock file is a build-
+# time error, not a silent drift.
+COPY packages/sdk/package.json      /tmp/gnfd-deps/package.json
+COPY packages/sdk/package-lock.json /tmp/gnfd-deps/package-lock.json
+RUN cd /tmp/gnfd-deps \
+ && npm ci --omit=dev --no-audit --no-fund \
+ && mkdir -p /usr/lib/node_modules \
+ && cp -r /tmp/gnfd-deps/node_modules/. /usr/lib/node_modules/ \
+ && rm -rf /tmp/gnfd-deps \
  && npm cache clean --force \
  && node -e "console.log('greenfield-js-sdk:', require.resolve('@bnb-chain/greenfield-js-sdk'))" \
  && node -e "console.log('ethers:',           require.resolve('ethers'))" \

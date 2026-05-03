@@ -268,6 +268,15 @@ class ChainBackend(StorageBackend):
     # immediately, so this is really just "how long without ANY write
     # activity before we forget about a prior fallback".
     _GREENFIELD_FALLBACK_STALE_AFTER = 300.0
+    # Same model for BSC anchor failures. BSC's anchor cadence is much
+    # slower than Greenfield's PUT cadence (anchors fire on commit, not
+    # on every write), so the staleness window also serves as a soft
+    # "if we haven't tried to anchor in 5 min the world's at peace".
+    _BSC_FAILURE_STALE_AFTER = 300.0
+    # WAL entries older than this are surfaced as "X writes pending for
+    # over 1 minute" in the desktop UI. Anything younger is just normal
+    # backpressure during heavy writes.
+    _WAL_PENDING_WARN_SECONDS = 60.0
 
     def _greenfield_fallback_active(self) -> bool:
         """True iff there's been a Greenfield→local fallback inside
@@ -282,6 +291,52 @@ class ChainBackend(StorageBackend):
         if last is None:
             return False
         return (time.time() - last) < self._GREENFIELD_FALLBACK_STALE_AFTER
+
+    def _bsc_anchor_failure_active(self) -> bool:
+        """True iff a BSC anchor failed inside the staleness window.
+
+        Mirrors :meth:`_greenfield_fallback_active` for the BSC side.
+        Without this check, the desktop's bsc_ready dot stayed solid
+        green even when every anchor was reverting (RPC down, nonce
+        stuck, gas exhausted) — same class of silent-failure bug as
+        the Greenfield fallback case.
+        """
+        last = getattr(self, "_last_bsc_anchor_failure_at", None)
+        if last is None:
+            return False
+        return (time.time() - last) < self._BSC_FAILURE_STALE_AFTER
+
+    def wal_oldest_pending(self) -> tuple[Optional[float], Optional[str]]:
+        """Return ``(age_seconds, path)`` for the oldest WAL entry, or
+        ``(None, None)`` if the WAL is empty / unreadable.
+
+        Surfaced as ``wal_oldest_age_seconds`` + ``wal_oldest_pending_path``
+        in :meth:`chain_health_snapshot` so the desktop can render a
+        warning like "3 writes pending for over 6 min — first stuck on
+        agents/.../session_xyz.json". Without that, a slow leak (one
+        write a day fails to land) wouldn't be visible until the WAL
+        had grown to thousands of entries — by which point the user
+        has already lost trust.
+        """
+        try:
+            entries = self._wal.read_all()
+        except Exception:
+            return (None, None)
+        if not entries:
+            return (None, None)
+        now = time.time()
+        oldest_ts = None
+        oldest_path = None
+        for e in entries:
+            ts = e.get("ts")
+            if ts is None:
+                continue
+            if oldest_ts is None or ts < oldest_ts:
+                oldest_ts = ts
+                oldest_path = e.get("path")
+        if oldest_ts is None:
+            return (None, None)
+        return (now - oldest_ts, oldest_path)
 
     def chain_health_snapshot(self) -> dict:
         """Compact summary for the Brain panel's Chain Health card.
@@ -308,6 +363,8 @@ class ChainBackend(StorageBackend):
         the marker immediately.
         """
         fallback_active = self._greenfield_fallback_active()
+        bsc_failure_active = self._bsc_anchor_failure_active()
+        wal_age, wal_path = self.wal_oldest_pending()
         return {
             "wal_queue_size": self.wal_queue_size(),
             "daemon_alive": getattr(self, "_daemon_alive", True),
@@ -315,12 +372,23 @@ class ChainBackend(StorageBackend):
             "greenfield_ready": (
                 self._greenfield is not None and not fallback_active
             ),
-            "bsc_ready": self._chain_client is not None,
-            # New fields (additive — older clients ignore unknown keys
-            # in the JSON deserialisation path, so this is safe to
-            # ship without a coordinated desktop release).
+            "bsc_ready": (
+                self._chain_client is not None and not bsc_failure_active
+            ),
+            # Greenfield-side observability fields.
             "fallback_active": fallback_active,
             "last_write_error": self._last_write_error,
+            # BSC-side observability fields. Same shape as the
+            # Greenfield ones so the desktop's banner template can
+            # render either with one component.
+            "bsc_failure_active": bsc_failure_active,
+            "last_bsc_anchor_error": getattr(self, "_last_bsc_anchor_error", None),
+            # WAL longevity: how long has the OLDEST pending write been
+            # waiting, and what's its path? The desktop renders a
+            # warning once age exceeds ~1 minute. Both can be None
+            # (empty WAL or read failure).
+            "wal_oldest_age_seconds": wal_age,
+            "wal_oldest_pending_path": wal_path,
         }
 
     # ── Background task management ─────────────────────────────────
@@ -933,12 +1001,33 @@ class ChainBackend(StorageBackend):
             # VersionedStore.chain_status can decide "anchored" vs
             # "drifted past last anchor".
             self._last_anchor_at[agent_id] = time.time()
+            # Successful anchor clears any prior BSC failure marker, so
+            # the desktop's bsc_ready dot returns to green automatically
+            # when the chain recovers — same recovery model as the
+            # Greenfield fallback marker.
+            self._last_bsc_anchor_failure_at = None
+            self._last_bsc_anchor_error = None
         except Exception as e:
             self._anchor_skip_until[agent_id] = time.time() + 300
+            # Structured failure log: twin_manager's _RE_BSC_FAIL picks
+            # this up and records a `degraded` chain event row, the
+            # same shape the desktop uses to render Greenfield fallback
+            # failures. Without this, BSC anchor failures were silent —
+            # the UI showed bsc dot solid green while every anchor
+            # attempt was reverting (the same class of bug as the
+            # Greenfield silent-fallback that bit production).
+            err_msg = str(e)[:300]
             logger.warning(
-                "[WRITE][BSC] Anchor failed for %s — local fallback. Reason: %s",
-                agent_id, e,
+                "[FALLBACK][BSC] Anchor failed for %s — agent=%s hash=%s reason=%s",
+                agent_id, agent_id, content_hash[:16], err_msg,
             )
+            self._last_bsc_anchor_failure_at = time.time()
+            self._last_bsc_anchor_error = {
+                "agent_id": agent_id,
+                "content_hash": content_hash[:16],
+                "error": err_msg,
+                "at": time.time(),
+            }
 
     async def resolve(self, agent_id: str, namespace: str = "state") -> Optional[str]:
         # Check local cache first (instant) — avoids blocking on BSC RPC during startup
