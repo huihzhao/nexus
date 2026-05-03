@@ -15,10 +15,19 @@
 
 services:
   nexus-server:
+    # In production, NEXUS_IMAGE is set by scripts/deploy/vps_deploy.sh
+    # to a fully-qualified GHCR ref (e.g. ghcr.io/owner/nexus-server:
+    # sha-abc1234). The default falls back to the locally-built
+    # `nexus-server:latest` so existing local-dev workflows
+    # (`docker compose up --build`) keep working without env tweaks.
+    image: ${NEXUS_IMAGE:-nexus-server:latest}
+    # Keeping `build:` here means `docker compose up --build` still
+    # rebuilds against the local Dockerfile during development. In
+    # production the image: tag wins because we never invoke --build,
+    # so no accidental rebuild on the VPS.
     build:
       context: .
       dockerfile: Dockerfile
-    image: nexus-server:latest
     container_name: nexus-server
     restart: unless-stopped
     env_file:

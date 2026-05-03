@@ -101,15 +101,79 @@ async function main() {
     console.log(`   First SP: ${JSON.stringify(spArray[0]).slice(0, 300)}`);
   }
 
-  let primarySP = null;
-  for (const sp of spArray) {
-    // Handle different field naming conventions
-    const status = sp.status ?? sp.Status;
-    if (status === 0 || status === "STATUS_IN_SERVICE" || status === "0") {
-      primarySP = sp;
-      break;
+  // ── Pick a primary SP that's both on-chain healthy AND actually
+  //    reachable from this host.
+  //
+  // Background: chain marks SPs as STATUS_IN_SERVICE the moment they
+  // register, but it has no liveness signal — a dead SP process keeps
+  // the IN_SERVICE flag indefinitely until it's officially deregistered
+  // (manual op). Earlier rev of this script just picked the first
+  // IN_SERVICE SP from the list. When that SP's process happens to be
+  // down, the resulting bucket is bound on-chain to a dead SP forever
+  // (primary SP is immutable post-create), and every subsequent PUT
+  // through the daemon hits ECONNREFUSED. Production agent #985 caught
+  // exactly this: bucket on-chain, every PUT silently falling back to
+  // local cache.
+  //
+  // We now probe each candidate's `/status` endpoint with a short
+  // timeout before committing the createBucket tx. The first SP that
+  // is BOTH IN_SERVICE on-chain AND answers an HTTP probe wins.
+  // Falls back to the on-chain pick if every probe fails (rare —
+  // implies the runner has no outbound HTTP at all).
+
+  // Lazy-load — only need fetch when probing. Native global since Node 18.
+  async function probeSp(sp, timeoutMs) {
+    const endpoint = sp.endpoint || sp.Endpoint;
+    if (!endpoint) return false;
+    const url = `${endpoint.replace(/\/$/, "")}/status`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const r = await fetch(url, { method: "GET", signal: ctrl.signal });
+      // Any 2xx/3xx = SP responded; the body content doesn't matter
+      // for liveness purposes. 5xx is also fine (process is up, it'll
+      // probably be fine for our PUT). Only treat 4xx-on-known-routes
+      // and connection refused as down.
+      return r.status < 500;
+    } catch (e) {
+      return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
+
+  const candidates = spArray.filter(sp => {
+    const status = sp.status ?? sp.Status;
+    return status === 0 || status === "STATUS_IN_SERVICE" || status === "0";
+  });
+
+  console.log(`   Probing ${candidates.length} IN_SERVICE SPs for liveness...`);
+  let primarySP = null;
+  for (const sp of candidates) {
+    const addr = sp.operatorAddress || sp.operator_address;
+    const ep = sp.endpoint || sp.Endpoint;
+    const ok = await probeSp(sp, 5000);
+    console.log(`     ${ok ? "✓" : "✗"} ${addr}  (${ep})`);
+    if (ok && !primarySP) {
+      primarySP = sp;
+      // Don't break — keep logging the rest so the operator can see
+      // the SP fleet's health at this moment. Cheap (5s × ~10 SPs
+      // worst-case, parallelisable later if it ever matters).
+    }
+  }
+
+  // Total liveness blackout — fall back to chain order so we at least
+  // attempt SOMETHING. Operator will see the no-probe-passed warning.
+  if (!primarySP && candidates.length > 0) {
+    console.warn(
+      "⚠ no SP responded to liveness probe — falling back to first " +
+      "IN_SERVICE SP. Bucket may end up bound to a dead SP."
+    );
+    primarySP = candidates[0];
+  }
+  // Ultimate fallback: take whatever's at index 0 even if not
+  // IN_SERVICE. createBucket will likely revert here, which is fine —
+  // better a clear error than a half-broken bucket.
   if (!primarySP && spArray.length > 0) primarySP = spArray[0];
 
   if (!primarySP) {

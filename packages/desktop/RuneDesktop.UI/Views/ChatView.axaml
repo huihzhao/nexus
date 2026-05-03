@@ -708,17 +708,23 @@
               </StackPanel>
 
               <!-- ═════════════════════════════════════════════════
-                   SECTION 3 — DATA FLOW (this turn)
+                   SECTION 3 — DATA FLOW
                    Compact DAG: Chat turn → Facts +N | Skills +N
                                          → Knowledge ⏸ N/M to fire
                                          → Persona ⏸ Nd to next
                    Skills branches off Chat turn but is a leaf.
+                   The +N numbers MUST match Section 1's cards because
+                   they bind to the SAME DeltaThisWeek/DeltaToday
+                   fields. Earlier rev titled this "(this turn)" which
+                   misled users into thinking the deltas were per-turn;
+                   per-stage time-window labels (today / this week)
+                   inline now keep the two sections honest.
                    ═════════════════════════════════════════════════ -->
               <StackPanel Spacing="6">
-                <TextBlock Text="SECTION 3 — DATA FLOW (this turn)"
+                <TextBlock Text="SECTION 3 — DATA FLOW"
                            FontSize="10" FontWeight="Bold"
                            Foreground="{StaticResource TextTertiaryBrush}"
-                           ToolTip.Tip="The pipeline turning chat into long-term knowledge. ⏸ means the evolver is accumulating but hasn't fired yet."/>
+                           ToolTip.Tip="The pipeline turning chat into long-term knowledge. ⏸ means the evolver is accumulating but hasn't fired yet. Numbers are recent activity — same time windows as the Brain at a Glance cards above."/>
                 <!-- Compact vertical DAG that fits a 320 px column.
                      Layout (top → bottom):
                        Chat turn (N turns)
@@ -753,19 +759,54 @@
                       </StackPanel>
                     </Border>
 
-                    <!-- Branch arrow: down + right into Skills -->
-                    <Grid ColumnDefinitions="*,Auto,Auto,Auto" Width="220">
-                      <Path Grid.Column="0" Stretch="None"
-                            Stroke="{StaticResource TextTertiaryBrush}"
-                            StrokeThickness="1"
-                            HorizontalAlignment="Right"
-                            Margin="0,0,40,0"
-                            Data="M 50,0 L 50,16"/>
+                    <!-- Branch arrows: Chat turn fans out to TWO leaf
+                         products and one downstream chain. The leaves
+                         (Episodes + Skills) keep this section in sync
+                         with Section 1's 5 namespace cards — earlier
+                         rev had only Skills here, which made operators
+                         (rightly) think the views disagreed. Episodes
+                         is the raw turn record; Skills is the
+                         in-the-loop strategy delta. -->
+                    <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto,Auto"
+                          Width="280">
+                      <!-- Episodes leaf (left) -->
+                      <Border Grid.Column="0"
+                              Padding="6,3" CornerRadius="5"
+                              Background="#2A2630"
+                              BorderBrush="#9F7BFF"
+                              BorderThickness="1"
+                              VerticalAlignment="Center">
+                        <StackPanel Spacing="0">
+                          <TextBlock FontSize="10" FontWeight="SemiBold"
+                                     Foreground="#C9B5FF">
+                            <Run Text="Episodes +"/>
+                            <Run Text="{Binding Cognition.Brain.Glance[4].DeltaToday}"/>
+                            <Run Text=" today" FontWeight="Normal"
+                                 Foreground="#9F7BFF"/>
+                          </TextBlock>
+                          <TextBlock Text="raw turn record"
+                                     FontSize="8"
+                                     Foreground="#9F7BFF"/>
+                        </StackPanel>
+                      </Border>
                       <Path Grid.Column="1" Stretch="None"
                             Stroke="{StaticResource TextTertiaryBrush}"
                             StrokeThickness="1"
+                            Data="M 0,8 L 30,8 M 4,5 L 0,8 L 4,11"/>
+                      <!-- Vertical stem from Chat turn down through this row -->
+                      <Path Grid.Column="2" Stretch="None"
+                            Stroke="{StaticResource TextTertiaryBrush}"
+                            StrokeThickness="1"
+                            Data="M 8,0 L 8,16"/>
+                      <!-- Filler column so left + right balance under
+                           the 280px width — keeps Chat turn centred. -->
+                      <Path Grid.Column="3"/>
+                      <!-- Skills leaf (right) -->
+                      <Path Grid.Column="4" Stretch="None"
+                            Stroke="{StaticResource TextTertiaryBrush}"
+                            StrokeThickness="1"
                             Data="M 0,8 L 30,8 M 26,5 L 30,8 L 26,11"/>
-                      <Border Grid.Column="2"
+                      <Border Grid.Column="5"
                               Padding="6,3" CornerRadius="5"
                               Background="#1F2E25"
                               BorderBrush="#7DBC68"
@@ -776,6 +817,8 @@
                                      Foreground="#A8D596">
                             <Run Text="Skills +"/>
                             <Run Text="{Binding Cognition.Brain.Glance[2].DeltaThisWeek}"/>
+                            <Run Text=" / wk" FontWeight="Normal"
+                                 Foreground="#7DBC68"/>
                           </TextBlock>
                           <TextBlock Text="learned strategy"
                                      FontSize="8"
@@ -801,6 +844,8 @@
                                    Foreground="#9CC6FF">
                           <Run Text="Facts +"/>
                           <Run Text="{Binding Cognition.Brain.Glance[3].DeltaToday}"/>
+                          <Run Text=" today" FontWeight="Normal"
+                               Foreground="#5AAEFF"/>
                         </TextBlock>
                         <TextBlock Text="preference, fact"
                                    FontSize="8"
