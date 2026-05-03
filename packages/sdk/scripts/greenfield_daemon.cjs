@@ -164,59 +164,42 @@ async function init() {
 async function resolveBucketSp() {
   if (bucketResolved) return true;
 
-  const config = CONFIGS[NETWORK] || CONFIGS.testnet;
   const spListRes = await client.sp.getStorageProviders();
   const spArray = Array.isArray(spListRes) ? spListRes : (spListRes.sps || []);
 
-  // ── Primary lookup path: chain LCD API (NOT the SDK).
+  // ── Primary lookup: SDK's getBucketMeta (SP-side REST API).
   //
-  // Why bypass the SDK: greenfield-js-sdk v2's getBucketMeta /
-  // headBucket return shapes shifted across minor releases, and the
-  // field that USED to be `primarySpId` got moved into a GVG family
-  // wrapper. Our v1.x-era field-name fallback table was matching
-  // `globalVirtualGroupFamilyId` as a "best effort" — but a GVG
-  // family id is NOT a primary SP id, so SP lookup ALWAYS missed,
-  // resolveBucketSp ALWAYS hit the chain-wide-first-SP fallback, and
-  // every PUT routed to whichever SP happened to be at index 0 of
-  // chain SP order (in production: 0x1Eb29..., a dead SP). Result:
-  // bucket's real primary SP was healthy, but we never used it.
+  // Greenfield v2 testnet's chain LCD does NOT expose primary_sp_id on
+  // head_bucket (only global_virtual_group_family_id), and the GVG
+  // family lookup endpoints all return "Not Implemented" (code 12).
+  // We empirically confirmed dcellar uses the SDK's getBucketMeta
+  // path, which goes through an SP and returns a `Vgf` (Virtual Group
+  // Family) object that DOES include `PrimarySpId`:
   //
-  // The chain LCD `head_bucket` endpoint speaks the canonical
-  // bucket_info shape and exposes `primary_sp_id` directly under
-  // chain v1 semantics. For v2 GVG-only buckets we read
-  // `global_virtual_group_family_id` and walk the family to its
-  // primary SP id via `head_global_virtual_group_family`.
+  //   client.bucket.getBucketMeta({bucketName})
+  //     → body.GfSpGetBucketMetaResponse.Bucket.Vgf.PrimarySpId
   //
-  // If both LCD calls fail (network glitch, malformed response), we
-  // fall through to "first probe-passing SP" rather than blindly
-  // taking chain[0] — small chance of routing to a non-bucket SP,
-  // but the upload will be rejected loud by Greenfield and chain.py
-  // surfaces the failure to the desktop instead of going silent.
+  // That's the canonical "what SP must I upload to?" answer. Earlier
+  // revs of this daemon tried chain LCD first; got "Not Implemented"
+  // every time; fell through to the probe-based fallback (first live
+  // SP) which is structurally wrong — Greenfield's "only the primary
+  // SP is allowed to create object for delegator" error told us that
+  // path was a non-starter (bucket #1011 incident).
   let primarySpId = null;
   let resolvedVia = null;
   try {
-    const url = `${config.chainRpc}/greenfield/storage/head_bucket/${BUCKET}`;
-    const r = await fetch(url);
-    if (r.ok) {
-      const data = await r.json();
-      const bi = data?.bucket_info || {};
-      if (bi.primary_sp_id !== undefined && bi.primary_sp_id !== null) {
-        primarySpId = bi.primary_sp_id;
-        resolvedVia = "lcd-head-bucket";
-      } else if (bi.global_virtual_group_family_id !== undefined) {
-        // GVG-family buckets: family.primary_sp_id is the truth.
-        const famUrl = `${config.chainRpc}/greenfield/virtualgroup/v1/global_virtual_group_family?family_id=${bi.global_virtual_group_family_id}`;
-        const fr = await fetch(famUrl);
-        if (fr.ok) {
-          const fd = await fr.json();
-          primarySpId =
-            fd?.global_virtual_group_family?.primary_sp_id ?? null;
-          if (primarySpId !== null) resolvedVia = "lcd-gvg-family";
-        }
-      }
+    const meta = await client.bucket.getBucketMeta({ bucketName: BUCKET });
+    const sp =
+      meta?.body?.GfSpGetBucketMetaResponse?.Bucket?.Vgf?.PrimarySpId;
+    if (sp !== undefined && sp !== null) {
+      primarySpId = sp;
+      resolvedVia = "sdk-getBucketMeta";
     }
   } catch (_e) {
-    // network / parse failure — leave primarySpId null and fall through.
+    // SDK getBucketMeta failure — usually transient SP unreachable.
+    // Fall through to probe-based fallback so doPut can at least
+    // attempt SOMETHING; SP-level upload failure will then bubble up
+    // descriptively (not silently).
   }
 
   let primarySP = null;
