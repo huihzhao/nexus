@@ -91,10 +91,49 @@ async function init() {
   pk = PRIVATE_KEY.startsWith("0x") ? PRIVATE_KEY : `0x${PRIVATE_KEY}`;
   authType = { type: "ECDSA", privateKey: pk };
 
-  // Get primary SP (cached for lifetime)
+  // Get primary SP (cached for lifetime).
+  //
+  // Old rev: `spArray.find(IN_SERVICE) || spArray[0]` — i.e. blindly
+  // trust chain's IN_SERVICE flag. Production showed that flag stays
+  // True for SPs whose process has crashed (chain has no liveness
+  // detection), so the daemon would pin its DEFAULT endpoint to a
+  // dead SP and every fallback in resolveBucketSp() would route to it
+  // → all PUTs ECONNREFUSED. We now probe each candidate's /status
+  // endpoint with a 5s timeout and pick the first live one.
   const spListRes = await client.sp.getStorageProviders();
   const spArray = Array.isArray(spListRes) ? spListRes : (spListRes.sps || []);
-  let primarySP = spArray.find(sp => sp.status === 0 || sp.status === "STATUS_IN_SERVICE") || spArray[0];
+  const inService = spArray.filter(
+    sp => sp.status === 0 || sp.status === "STATUS_IN_SERVICE",
+  );
+
+  async function probeSpAlive(sp, timeoutMs) {
+    const ep = sp.endpoint || sp.Endpoint;
+    if (!ep) return false;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const r = await fetch(`${ep.replace(/\/$/, "")}/status`,
+                            { method: "GET", signal: ctrl.signal });
+      return r.status < 500;
+    } catch (_e) {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  let primarySP = null;
+  for (const sp of inService) {
+    if (await probeSpAlive(sp, 5000)) { primarySP = sp; break; }
+  }
+  if (!primarySP) {
+    // Worst case — every IN_SERVICE SP failed the probe. Still pick
+    // SOMETHING so the daemon can boot, but log loud. Fallback to
+    // chain order.
+    primarySP = inService[0] || spArray[0];
+    out({ id: 0, ok: true, info: "no-sp-probe-passed",
+          warn: "every IN_SERVICE SP failed liveness probe — boot may be unstable" });
+  }
   if (!primarySP) {
     out({ id: 0, ok: false, error: "No storage providers found" });
     process.exit(1);
@@ -124,63 +163,115 @@ async function init() {
  */
 async function resolveBucketSp() {
   if (bucketResolved) return true;
+
+  const config = CONFIGS[NETWORK] || CONFIGS.testnet;
+  const spListRes = await client.sp.getStorageProviders();
+  const spArray = Array.isArray(spListRes) ? spListRes : (spListRes.sps || []);
+
+  // ── Primary lookup path: chain LCD API (NOT the SDK).
+  //
+  // Why bypass the SDK: greenfield-js-sdk v2's getBucketMeta /
+  // headBucket return shapes shifted across minor releases, and the
+  // field that USED to be `primarySpId` got moved into a GVG family
+  // wrapper. Our v1.x-era field-name fallback table was matching
+  // `globalVirtualGroupFamilyId` as a "best effort" — but a GVG
+  // family id is NOT a primary SP id, so SP lookup ALWAYS missed,
+  // resolveBucketSp ALWAYS hit the chain-wide-first-SP fallback, and
+  // every PUT routed to whichever SP happened to be at index 0 of
+  // chain SP order (in production: 0x1Eb29..., a dead SP). Result:
+  // bucket's real primary SP was healthy, but we never used it.
+  //
+  // The chain LCD `head_bucket` endpoint speaks the canonical
+  // bucket_info shape and exposes `primary_sp_id` directly under
+  // chain v1 semantics. For v2 GVG-only buckets we read
+  // `global_virtual_group_family_id` and walk the family to its
+  // primary SP id via `head_global_virtual_group_family`.
+  //
+  // If both LCD calls fail (network glitch, malformed response), we
+  // fall through to "first probe-passing SP" rather than blindly
+  // taking chain[0] — small chance of routing to a non-bucket SP,
+  // but the upload will be rejected loud by Greenfield and chain.py
+  // surfaces the failure to the desktop instead of going silent.
+  let primarySpId = null;
+  let resolvedVia = null;
   try {
-    // Try the modern bucket meta endpoint first; some SDK versions
-    // ship as `getBucketMeta`, others as `headBucket`. Both surface
-    // the bucket's primary SP id / address.
-    let info = null;
-    if (typeof client.bucket.getBucketMeta === "function") {
-      info = await client.bucket.getBucketMeta({ bucketName: BUCKET });
-    } else if (typeof client.bucket.headBucket === "function") {
-      info = await client.bucket.headBucket(BUCKET);
+    const url = `${config.chainRpc}/greenfield/storage/head_bucket/${BUCKET}`;
+    const r = await fetch(url);
+    if (r.ok) {
+      const data = await r.json();
+      const bi = data?.bucket_info || {};
+      if (bi.primary_sp_id !== undefined && bi.primary_sp_id !== null) {
+        primarySpId = bi.primary_sp_id;
+        resolvedVia = "lcd-head-bucket";
+      } else if (bi.global_virtual_group_family_id !== undefined) {
+        // GVG-family buckets: family.primary_sp_id is the truth.
+        const famUrl = `${config.chainRpc}/greenfield/virtualgroup/v1/global_virtual_group_family?family_id=${bi.global_virtual_group_family_id}`;
+        const fr = await fetch(famUrl);
+        if (fr.ok) {
+          const fd = await fr.json();
+          primarySpId =
+            fd?.global_virtual_group_family?.primary_sp_id ?? null;
+          if (primarySpId !== null) resolvedVia = "lcd-gvg-family";
+        }
+      }
     }
-    const bucketInfo = info?.bucketInfo
-      || info?.bucket_info
-      || info?.body?.bucketInfo
-      || info?.body?.bucket_info;
+  } catch (_e) {
+    // network / parse failure — leave primarySpId null and fall through.
+  }
 
-    // Different SDK versions name the field differently; try them all.
-    const primarySpId = bucketInfo?.primarySpId
-      ?? bucketInfo?.primary_sp_id
-      ?? bucketInfo?.PrimarySpId
-      ?? bucketInfo?.globalVirtualGroupFamilyId; // fallback proxy
+  let primarySP = null;
+  if (primarySpId !== null) {
+    primarySP = spArray.find(sp => {
+      const idCandidates = [sp.id, sp.Id, sp.spId, sp.sp_id]
+        .filter(v => v !== undefined && v !== null)
+        .map(v => String(v));
+      return idCandidates.includes(String(primarySpId));
+    });
+  }
 
-    // Try to find the SP we already enumerated whose id matches.
-    const spListRes = await client.sp.getStorageProviders();
-    const spArray = Array.isArray(spListRes) ? spListRes : (spListRes.sps || []);
-    let primarySP = null;
-    if (primarySpId !== undefined && primarySpId !== null) {
-      primarySP = spArray.find(sp => {
-        const idCandidates = [sp.id, sp.Id, sp.spId, sp.sp_id]
-          .filter(v => v !== undefined && v !== null)
-          .map(v => String(v));
-        return idCandidates.includes(String(primarySpId));
-      });
+  // ── Fallback path: probe each IN_SERVICE SP for liveness, take
+  //    the first that responds. Crucially this is NOT chain[0] —
+  //    that's how we ended up routing to a dead SP in production.
+  async function probeSpAlive(sp, timeoutMs) {
+    const ep = sp.endpoint || sp.Endpoint;
+    if (!ep) return false;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const r = await fetch(`${ep.replace(/\/$/, "")}/status`,
+                            { method: "GET", signal: ctrl.signal });
+      return r.status < 500;
+    } catch (_e) {
+      return false;
+    } finally {
+      clearTimeout(timer);
     }
-    // If we found the bucket's primary SP, pin its endpoint. Otherwise
-    // fall back to the chain-wide first SP we picked at boot.
-    if (primarySP) {
-      bucketPrimarySpAddr = primarySP.operatorAddress || primarySP.operator_address;
-      bucketPrimarySpEndpoint = primarySP.endpoint;
-      out({ id: 0, ok: true, info: "bucket-sp-resolved",
-            bucket: BUCKET, sp: bucketPrimarySpAddr, endpoint: bucketPrimarySpEndpoint });
-    } else {
-      bucketPrimarySpAddr = spAddr;
-      bucketPrimarySpEndpoint = spEndpoint;
-      out({ id: 0, ok: true, info: "bucket-sp-fallback",
-            bucket: BUCKET, sp: spAddr, reason: "primary SP id not found in SP list" });
+  }
+
+  if (!primarySP) {
+    const inService = spArray.filter(
+      sp => sp.status === 0 || sp.status === "STATUS_IN_SERVICE",
+    );
+    for (const sp of inService) {
+      if (await probeSpAlive(sp, 5000)) { primarySP = sp; resolvedVia = "probe-fallback"; break; }
     }
-    bucketResolved = true;
-    return true;
-  } catch (e) {
-    // Bucket might not exist yet (first-write race) — leave the
-    // global default endpoint in place; doPut will fail loud and
-    // chain.py falls back to local with the descriptive error.
+  }
+
+  if (primarySP) {
+    bucketPrimarySpAddr = primarySP.operatorAddress || primarySP.operator_address;
+    bucketPrimarySpEndpoint = primarySP.endpoint;
+    out({ id: 0, ok: true, info: "bucket-sp-resolved",
+          bucket: BUCKET, sp: bucketPrimarySpAddr,
+          endpoint: bucketPrimarySpEndpoint, via: resolvedVia });
+  } else {
     bucketPrimarySpAddr = spAddr;
     bucketPrimarySpEndpoint = spEndpoint;
-    bucketResolved = true;
-    return false;
+    out({ id: 0, ok: true, info: "bucket-sp-fallback",
+          bucket: BUCKET, sp: spAddr,
+          reason: "no SP available — bucket may have been bound to a dead primary SP" });
   }
+  bucketResolved = true;
+  return primarySP !== null;
 }
 
 async function doPut(id, objectName, hexData) {
