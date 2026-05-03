@@ -435,8 +435,14 @@ class GreenfieldClient:
                         self._bucket_name, owner,
                     )
                     return True
-            # Bucket doesn't exist — try to create it automatically
-            logger.info(
+            # Bucket doesn't exist — try to create it automatically.
+            # WARNING-level on purpose: bumped from INFO after we caught
+            # logging configs in production where INFO was suppressed,
+            # making this critical state-transition silently invisible
+            # in `docker compose logs`. WARNING ensures the
+            # "we're about to create your on-chain bucket" line is
+            # always visible no matter how the logger is configured.
+            logger.warning(
                 "Bucket '%s' not found on chain — attempting auto-create...",
                 self._bucket_name,
             )
@@ -449,7 +455,7 @@ class GreenfieldClient:
                 if resp2.status_code == 200:
                     data2 = resp2.json()
                     if data2.get("bucket_info", {}).get("bucket_name") == self._bucket_name:
-                        logger.info("Bucket '%s' created and verified!", self._bucket_name)
+                        logger.warning("Bucket '%s' created and verified!", self._bucket_name)
                         return True
             logger.warning(
                 "Bucket '%s' could not be created. Create it manually:\n"
@@ -494,6 +500,12 @@ class GreenfieldClient:
         env["NEXUS_GREENFIELD_BUCKET"] = self._bucket_name
         env["NEXUS_GREENFIELD_NETWORK"] = self._network
 
+        # 60s is comfortable for the happy path: SP probe (~10-20s
+        # depending on dead-SP distribution), simulate (~2s), broadcast
+        # (~3s), 5s chain finality wait, verify call (~1s). Bucket #1001
+        # observed wall-time was 12s end-to-end. Bumping this won't fix
+        # the agent #1003 case — that one's failure mode is "ensure_bucket
+        # never reached create_bucket", not "create_bucket got SIGKILL'd".
         logger.info("Creating bucket '%s' via JS SDK...", self._bucket_name)
         try:
             result = subprocess.run(
@@ -910,34 +922,108 @@ class GreenfieldClient:
         except FileNotFoundError:
             return {"ok": False, "error": "Node.js not found — install Node.js 18+"}
 
+    # Backoff between ensure_bucket() retries when previous attempt
+    # failed. Without this, a freshly-registered agent whose chain RPC
+    # is briefly slow ends up calling create_bucket on EVERY put, each
+    # taking 60s + getting SIGKILL'd, the WAL never drains. Cap at 5
+    # min so a recovered chain comes back online cleanly without ops
+    # intervention.
+    _BUCKET_RETRY_BACKOFF_SECONDS = 30.0
+    _BUCKET_RETRY_MAX_BACKOFF = 300.0
+
     async def _ensure_bucket_once(self) -> bool:
-        """Lazy, idempotent bucket-existence-and-auto-create.
+        """Lazy bucket-existence-and-auto-create with exponential backoff.
 
-        Called at the top of every Greenfield read/write so a freshly-
-        registered agent's first PUT auto-creates its bucket instead of
-        failing with "No such bucket: unknown request". Once verified,
-        subsequent calls are a single boolean check (no RPC).
+        Called at the top of every Greenfield read/write. Three-tier
+        behaviour:
 
-        Returns True iff the bucket exists (or was just created); False
-        if creation failed. The caller decides how to handle False —
-        ``_put_greenfield`` falls back to local storage, ``_get_greenfield``
-        returns None.
+          * ``_bucket_verified == True``  → instant return, no RPC.
+          * Recent failure within backoff → instant return False, no
+            RPC (so the WAL doesn't get hammered while chain is down).
+          * Otherwise                    → run ensure_bucket(), record
+            outcome + timestamp.
+
+        Returns True iff the bucket exists (or was just created). The
+        ``_bucket_verified`` flag is also reset externally by
+        ``invalidate_bucket_cache()`` when daemon PUTs fail with a
+        "no such bucket" type error — that's how the agent #1003-style
+        "bucket got de-synced from server cache" recovers.
         """
         if self._bucket_verified:
             return True
+
+        # Don't hammer chain RPC if a recent attempt failed. Each
+        # successive failure doubles the wait, capped at 5 min.
+        now = time.time()
+        last_fail = getattr(self, "_last_bucket_check_failed_at", None)
+        backoff = getattr(self, "_bucket_retry_backoff",
+                          self._BUCKET_RETRY_BACKOFF_SECONDS)
+        if last_fail is not None and (now - last_fail) < backoff:
+            return False
+
         async with self._bucket_ensure_lock:
             if self._bucket_verified:
                 return True
+            # Re-check the cooldown under the lock to avoid two
+            # contending callers both kicking off a 60s subprocess.
+            now = time.time()
+            last_fail = getattr(self, "_last_bucket_check_failed_at", None)
+            if last_fail is not None and (now - last_fail) < backoff:
+                return False
+
+            logger.info(
+                "ensure_bucket: attempt for %s (backoff %.0fs)",
+                self._bucket_name, backoff,
+            )
             try:
                 ok = await self.ensure_bucket()
             except Exception as e:
                 logger.warning(
                     "ensure_bucket raised for %s: %s", self._bucket_name, e,
                 )
-                return False
+                ok = False
             if ok:
                 self._bucket_verified = True
+                # Reset backoff on success.
+                self._last_bucket_check_failed_at = None
+                self._bucket_retry_backoff = self._BUCKET_RETRY_BACKOFF_SECONDS
+            else:
+                self._last_bucket_check_failed_at = time.time()
+                # Exponential backoff for the NEXT attempt — first
+                # failure: 30s, then 60s, 120s, ..., capped at 5 min.
+                self._bucket_retry_backoff = min(
+                    backoff * 2,
+                    self._BUCKET_RETRY_MAX_BACKOFF,
+                )
+                logger.warning(
+                    "ensure_bucket failed for %s — next attempt in %.0fs",
+                    self._bucket_name, self._bucket_retry_backoff,
+                )
             return ok
+
+    def invalidate_bucket_cache(self, reason: str = "") -> None:
+        """Force the next put/get to re-run ensure_bucket from scratch.
+
+        Called by daemon-PUT failure paths when the SP returns a
+        "no such bucket" type error — that means our cached
+        ``_bucket_verified=True`` got out of sync with reality
+        (bucket disappeared, was bound to a now-dead SP, etc). Without
+        this, subsequent PUTs would skip ensure_bucket forever and
+        silently fall back to local storage; now they get one more
+        chance to re-create-or-rebind. The retry backoff still applies
+        — we don't loop tight on chain RPC.
+        """
+        if self._bucket_verified:
+            logger.warning(
+                "Invalidating bucket cache for %s — reason: %s",
+                self._bucket_name, reason or "(unspecified)",
+            )
+        self._bucket_verified = False
+        # Allow an immediate next attempt — caller's failure already
+        # served as a "real" probe; backoff was about to become stale
+        # anyway.
+        self._last_bucket_check_failed_at = None
+        self._bucket_retry_backoff = self._BUCKET_RETRY_BACKOFF_SECONDS
 
     async def _put_greenfield(self, data: bytes, chash: str, object_path: Optional[str] = None) -> str:
         """
@@ -974,12 +1060,28 @@ class GreenfieldClient:
         result = await asyncio.to_thread(self._run_js_op, "put", canonical, data.hex())
         if not result.get("ok"):
             error = result.get("error", "unknown")
-            # Don't log a WARNING + then raise on the SAME line — the
-            # chain backend's exception handler already produces a
-            # WARNING via _record_write_failure. Keep this log line
-            # at INFO and structured (the [FALLBACK][Greenfield] tag
-            # is what twin_manager regex-matches into a degraded
-            # event row).
+
+            # If the SP says "no such bucket" / "bucket not found",
+            # our cached _bucket_verified=True is lying — bucket got
+            # de-synced from chain reality (rare, but happened on the
+            # agent #1003 incident: server thought bucket existed,
+            # chain LCD said it didn't, daemon PUT failed at SP level).
+            # Invalidate so the NEXT PUT retries ensure_bucket and
+            # actually creates it. Without this, every subsequent PUT
+            # silently falls back to local forever, and the WAL
+            # inflates without ever flushing.
+            error_lower = (error or "").lower()
+            bucket_missing_signal = any(
+                tok in error_lower for tok in (
+                    "no such bucket",
+                    "bucket not found",
+                    "bucket does not exist",
+                    "code=6",         # SP's gnfd error code for missing bucket
+                )
+            )
+            if bucket_missing_signal:
+                self.invalidate_bucket_cache(reason=error[:120])
+
             self._ensure_local_fallback()
             local_chash = self._put_local(data, chash, object_path=object_path)
             logger.warning(
