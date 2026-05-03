@@ -126,15 +126,32 @@ ENV NODE_PATH=/usr/lib/node_modules
 # time error, not a silent drift.
 COPY packages/sdk/package.json      /tmp/gnfd-deps/package.json
 COPY packages/sdk/package-lock.json /tmp/gnfd-deps/package-lock.json
-# Important: walk OUT of /tmp/gnfd-deps before deleting it. The previous
-# rev did `rm -rf /tmp/gnfd-deps && npm cache clean` while still cd'd
-# inside that directory; the npm process inherited the now-dangling cwd
-# and crashed with `ENOENT: no such file or directory, uv_cwd` when it
-# tried to read `process.cwd()` during boot. The `cd /` puts the
-# subsequent commands somewhere stable.
+# Tune npm to survive the NA→EU latency DigitalOcean fra1 → registry.
+# npmjs.org has on heavy days. Defaults are fetch-retries=2 +
+# fetch-timeout=300s — we hit EIDLETIMEOUT (idle reset mid-tarball-
+# stream) on a 200+ package install, which fails the WHOLE npm ci.
+# Bumping retries to 5 and timeout to 10 min covers the typical glitch
+# without making a healthy build any slower.
+RUN npm config set fetch-retries 5 \
+ && npm config set fetch-retry-maxtimeout 120000 \
+ && npm config set fetch-timeout 600000
+
+# Step 1: install. Isolated in its own RUN so a network blip costs us
+# the install layer only — not the cp / cleanup / validation that
+# follow. Docker layer cache will reuse this on the next build if
+# package.json + lock haven't changed.
 RUN cd /tmp/gnfd-deps \
- && npm ci --omit=dev --no-audit --no-fund \
- && mkdir -p /usr/lib/node_modules \
+ && npm ci --omit=dev --no-audit --no-fund
+
+# Step 2: shuffle the installed tree to NODE_PATH and validate. Cheap
+# (cp + node -e checks), so its own layer is fine.
+#
+# Important: cd OUT of /tmp/gnfd-deps before deleting it. An earlier
+# rev did `rm -rf /tmp/gnfd-deps && npm cache clean` while still cd'd
+# inside that directory; the npm process inherited the now-dangling
+# cwd and crashed with `ENOENT: no such file or directory, uv_cwd`
+# when it tried to read `process.cwd()` during boot. `cd /` first.
+RUN mkdir -p /usr/lib/node_modules \
  && cp -r /tmp/gnfd-deps/node_modules/. /usr/lib/node_modules/ \
  && cd / \
  && rm -rf /tmp/gnfd-deps \
