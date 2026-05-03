@@ -811,6 +811,22 @@ public class ApiClient
         catch { return null; }
     }
 
+    /// <summary>
+    /// Externally-installed skills (SKILL.md packages obtained via
+    /// <c>manage_skill install</c>) — backs the desktop's
+    /// "INSTALLED SKILLS" panel. Distinct from the Brain panel's
+    /// "Heuristics" card, which counts learned strategies from the
+    /// SkillEvolver and is read out of /chain_status's namespace
+    /// metadata instead. Polled at the same cadence as chain_status.
+    /// </summary>
+    public async Task<InstalledSkillsResponse?> GetInstalledSkillsAsync()
+    {
+        EnsureAuthenticated();
+        var url = $"{_serverUrl}/api/v1/agent/skills";
+        try { return await GetWithRetryAsync<InstalledSkillsResponse>(url); }
+        catch { return null; }
+    }
+
     /// <summary>Brain panel: 7-day timeline + just-learned feed +
     /// data-flow snapshot. Polled every ~10s (Phase D 续 / #159).</summary>
     public async Task<LearningSummaryResponse?> GetLearningSummaryAsync(string window = "7d")

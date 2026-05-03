@@ -649,6 +649,43 @@ public record ChainEventsResponse
     public int TotalReturned { get; init; }
 }
 
+/// <summary>
+/// One row in the desktop's INSTALLED SKILLS panel — an externally-
+/// installed SKILL.md package the agent gained via
+/// <c>manage_skill install</c>. NOT to be confused with the
+/// "Heuristics" namespace card on the Brain panel — that's the
+/// strategies the SkillEvolver learned from chat history.
+/// </summary>
+public record InstalledSkillSummary
+{
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = "";
+
+    [JsonPropertyName("title")]
+    public string Title { get; init; } = "";
+
+    [JsonPropertyName("description")]
+    public string Description { get; init; } = "";
+
+    [JsonPropertyName("version")]
+    public string Version { get; init; } = "";
+
+    [JsonPropertyName("author")]
+    public string Author { get; init; } = "";
+
+    [JsonPropertyName("has_references")]
+    public bool HasReferences { get; init; }
+}
+
+public record InstalledSkillsResponse
+{
+    [JsonPropertyName("skills")]
+    public List<InstalledSkillSummary> Skills { get; init; } = [];
+
+    [JsonPropertyName("total")]
+    public int Total { get; init; }
+}
+
 public record ChainStatusResponse
 {
     [JsonPropertyName("namespaces")]

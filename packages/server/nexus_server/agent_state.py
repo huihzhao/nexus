@@ -863,6 +863,74 @@ async def get_chain_status(
     )
 
 
+# ── Installed skills (external SKILL.md tools) ──────────────────────
+#
+# IMPORTANT: This is the list of EXTERNAL skills the agent has
+# `manage_skill install`'d (think `pip install` for capabilities) —
+# things like the pdf / xlsx / docx skills from Anthropic's marketplace
+# or LobeHub. It is NOT the same as Brain panel's "Heuristics" card,
+# which is the strategies the SkillEvolver learned from chat history
+# and lives in namespaces/skills/v{N}.json on Greenfield.
+#
+# The two are distinct concepts:
+#   * Heuristics (= internal strategies, learned)  — agent's reflexes
+#   * Skills     (= external tool packages, installed) — agent's tools
+#
+# The historical "skills" namespace name on chain points at Heuristics
+# for back-compat; UI labels the right thing.
+
+
+class InstalledSkillSummary(BaseModel):
+    """One row in the desktop's INSTALLED SKILLS panel."""
+    name: str
+    title: str = ""
+    description: str = ""
+    version: str = ""
+    author: str = ""
+    # `path` deliberately omitted — exposing a /data/.../skills/<name>
+    # filesystem path to the desktop client serves no purpose and
+    # leaks server-side layout.
+    has_references: bool = False
+
+
+class InstalledSkillsResponse(BaseModel):
+    skills: list[InstalledSkillSummary]
+    total: int
+
+
+@router.get("/skills", response_model=InstalledSkillsResponse)
+async def get_installed_skills(
+    current_user: str = Depends(get_current_user),
+) -> InstalledSkillsResponse:
+    """List externally-installed skills for the desktop's INSTALLED
+    SKILLS panel.
+
+    Reads from ``twin.skills.installed`` (a SkillManager instance
+    populated lazily as the agent calls ``manage_skill install``).
+    Falls back to an empty list if the twin is in local mode or
+    SkillManager is unavailable — the desktop renders the panel
+    empty rather than crashing.
+    """
+    twin = await twin_manager.get_twin(current_user)
+    mgr = getattr(twin, "skills", None)
+    if mgr is None:
+        return InstalledSkillsResponse(skills=[], total=0)
+    rows: list[InstalledSkillSummary] = []
+    try:
+        for s in mgr.installed:
+            rows.append(InstalledSkillSummary(
+                name=getattr(s, "name", "") or "",
+                title=getattr(s, "title", "") or "",
+                description=getattr(s, "description", "") or "",
+                version=getattr(s, "version", "") or "",
+                author=getattr(s, "author", "") or "",
+                has_references=bool(getattr(s, "references", None)),
+            ))
+    except Exception as e:
+        logger.warning("get_installed_skills failed: %s", e)
+    return InstalledSkillsResponse(skills=rows, total=len(rows))
+
+
 # ── Chain operations log — every Greenfield/BSC attempt with status ──
 
 

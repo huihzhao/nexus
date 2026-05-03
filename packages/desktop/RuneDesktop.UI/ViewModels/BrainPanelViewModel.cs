@@ -63,7 +63,20 @@ public partial class NamespaceGlanceViewModel : ObservableObject
         double? lastCommitAt = null, double? lastAnchorAt = null)
     {
         Name = name;
-        DisplayName = char.ToUpperInvariant(name[0]) + name[1..];
+        // Most namespaces just title-case their machine name. The "skills"
+        // namespace is the historical name for what we actually surface
+        // as "Heuristics" — strategies the SkillEvolver learns from chat
+        // (success/failure counts, lessons[], etc). It's NOT the same as
+        // externally-installed Skills (SKILL.md files via manage_skill);
+        // those are listed in the separate INSTALLED SKILLS panel.
+        // Keeping the wire-name "skills" so existing Greenfield snapshots
+        // (namespaces/skills/v0042.json) and chain history don't break;
+        // only the desktop label is rewritten.
+        DisplayName = name switch
+        {
+            "skills" => "Heuristics",
+            _        => char.ToUpperInvariant(name[0]) + name[1..],
+        };
         Count = count;
         DeltaToday = deltaToday;
         DeltaThisWeek = deltaThisWeek > 0 ? deltaThisWeek : deltaToday;
@@ -279,6 +292,57 @@ public partial class JustLearnedItemViewModel : ObservableObject
         string.Equals(ChainStatus, "anchored", StringComparison.OrdinalIgnoreCase);
     public bool DotAnchored =>
         string.Equals(ChainStatus, "anchored", StringComparison.OrdinalIgnoreCase);
+}
+
+// ── Installed skill row (external SKILL.md packages) ────────────────
+
+/// <summary>
+/// Display-side wrapper for <see cref="InstalledSkillSummary"/>.
+/// Pre-formats labels for the right-rail INSTALLED SKILLS panel.
+///
+/// Emphatically NOT the Brain panel's "Heuristics" — those are the
+/// agent's learned strategies (SkillEvolver, namespaces/skills/v*).
+/// THESE are the agent's tool packages: pdf, xlsx, mcp:slack, etc.
+/// </summary>
+public partial class InstalledSkillViewModel : ObservableObject
+{
+    public string Name { get; }
+    public string Title { get; }
+    public string Description { get; }
+    public string Version { get; }
+    public string Author { get; }
+    public bool HasReferences { get; }
+
+    public InstalledSkillViewModel(InstalledSkillSummary src)
+    {
+        Name = src.Name ?? "";
+        // Fall back to name when title isn't set; many marketplace
+        // skills have name=="pdf" and title=="" rather than a friendly
+        // human label, so we want SOMETHING in the prominent slot.
+        Title = !string.IsNullOrWhiteSpace(src.Title) ? src.Title : (Name ?? "");
+        Description = src.Description ?? "";
+        Version = src.Version ?? "";
+        Author = src.Author ?? "";
+        HasReferences = src.HasReferences;
+    }
+
+    /// <summary>Compact "v1.2 · author" subtitle for the row.
+    /// Renders empty pieces as nothing rather than dangling separators.
+    /// </summary>
+    public string MetaLine
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(Version))
+                parts.Add("v" + Version.TrimStart('v'));
+            if (!string.IsNullOrWhiteSpace(Author))
+                parts.Add(Author);
+            if (HasReferences)
+                parts.Add("+ refs");
+            return string.Join(" · ", parts);
+        }
+    }
 }
 
 // ── Chain operation log row (Section 6: operations history) ─────────
@@ -575,6 +639,19 @@ public partial class BrainPanelViewModel : ObservableObject
     /// </summary>
     public ObservableCollection<ChainEventViewModel> ChainEvents { get; } = new();
 
+    /// <summary>
+    /// Externally-installed Skills (SKILL.md packages from
+    /// LobeHub/Anthropic/GitHub via <c>manage_skill install</c>).
+    /// Distinct from the Heuristics namespace card — those are the
+    /// strategies the SkillEvolver derived from chat. Populated by
+    /// RefreshAsync from /api/v1/agent/skills.
+    /// </summary>
+    public ObservableCollection<InstalledSkillViewModel> InstalledSkills { get; } = new();
+
+    /// <summary>True iff there are no installed skills — drives the
+    /// empty-state placeholder in the desktop panel.</summary>
+    public bool IsInstalledSkillsEmpty => InstalledSkills.Count == 0;
+
     // ── Section 2 line-chart geometry (#159 v3) ─────────────────────────
     //
     // Each ``…LinePoints`` is a space-separated "x1,y1 x2,y2 …" string
@@ -645,11 +722,13 @@ public partial class BrainPanelViewModel : ObservableObject
             var chainTask = _api.GetChainStatusAsync();
             var learningTask = _api.GetLearningSummaryAsync("7d");
             var eventsTask = _api.GetChainEventsAsync(20);
-            await Task.WhenAll(chainTask, learningTask, eventsTask);
+            var skillsTask = _api.GetInstalledSkillsAsync();
+            await Task.WhenAll(chainTask, learningTask, eventsTask, skillsTask);
 
             var chain = await chainTask;
             var learning = await learningTask;
             var events = await eventsTask;
+            var skills = await skillsTask;
 
             // Marshal the collection mutations onto the UI thread
             // — see method-level comment for why this matters.
@@ -658,6 +737,7 @@ public partial class BrainPanelViewModel : ObservableObject
                 ApplyChain(chain);
                 ApplyLearning(learning);
                 ApplyChainEvents(events);
+                ApplyInstalledSkills(skills);
             });
         }
         catch (Exception e)
@@ -713,6 +793,20 @@ public partial class BrainPanelViewModel : ObservableObject
         ChainEvents.Clear();
         foreach (var e in events.Events)
             ChainEvents.Add(new ChainEventViewModel(e));
+    }
+
+    /// <summary>
+    /// Refresh the INSTALLED SKILLS list from the latest server
+    /// snapshot. Replace-in-place semantics — server is source of
+    /// truth, no incremental merging.
+    /// </summary>
+    private void ApplyInstalledSkills(InstalledSkillsResponse? skills)
+    {
+        if (skills?.Skills is null) return;
+        InstalledSkills.Clear();
+        foreach (var s in skills.Skills)
+            InstalledSkills.Add(new InstalledSkillViewModel(s));
+        OnPropertyChanged(nameof(IsInstalledSkillsEmpty));
     }
 
     private void ApplyLearning(LearningSummaryResponse? learning)

@@ -813,9 +813,17 @@
                               BorderThickness="1"
                               VerticalAlignment="Center">
                         <StackPanel Spacing="0">
+                          <!-- "Heuristics" = strategies the SkillEvolver
+                               learned from chat history (NOT externally
+                               installed SKILL.md files — those are
+                               listed in the INSTALLED SKILLS panel
+                               below as 'Skills'). The wire-name is
+                               still "skills" for back-compat with
+                               historical Greenfield snapshots; only
+                               the label is rewritten. -->
                           <TextBlock FontSize="10" FontWeight="SemiBold"
                                      Foreground="#A8D596">
-                            <Run Text="Skills +"/>
+                            <Run Text="Heuristics +"/>
                             <Run Text="{Binding Cognition.Brain.Glance[2].DeltaThisWeek}"/>
                             <Run Text=" / wk" FontWeight="Normal"
                                  Foreground="#7DBC68"/>
@@ -1541,6 +1549,64 @@
                                      VerticalAlignment="Top"
                                      Margin="8,0,0,0"/>
                         </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- ─────────────────────────────────────────────────
+                     INSTALLED SKILLS (Section 7) — externally-installed
+                     SKILL.md packages. NOT to be confused with the
+                     Brain panel's Heuristics card (= learned strategies
+                     from SkillEvolver). These are tools the agent has
+                     pip-install'd: pdf, xlsx, mcp:slack, etc.
+                     ───────────────────────────────────────────────── -->
+                <TextBlock Text="INSTALLED SKILLS"
+                           FontSize="9" FontWeight="Bold"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           Margin="0,8,0,0"
+                           ToolTip.Tip="External skill packages the agent has installed via manage_skill (pdf, xlsx, mcp:*, etc). Different from the Heuristics card above — those are strategies the agent learned from chat."/>
+                <!-- Empty state placeholder — visible iff no skills are
+                     installed yet. Keeps the section header from looking
+                     orphaned on a fresh deployment. -->
+                <TextBlock IsVisible="{Binding Cognition.Brain.IsInstalledSkillsEmpty}"
+                           Text="No skills installed yet — the agent will install them as it needs new capabilities."
+                           FontSize="10"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           TextWrapping="Wrap"
+                           Margin="0,2,0,0"/>
+                <ItemsControl ItemsSource="{Binding Cognition.Brain.InstalledSkills}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Padding="8,5" CornerRadius="6"
+                              Background="{StaticResource SurfaceCardBrush}"
+                              Margin="0,0,0,4">
+                        <StackPanel Spacing="2">
+                          <Grid ColumnDefinitions="Auto,*">
+                            <TextBlock Grid.Column="0"
+                                       Text="📄"
+                                       FontSize="11"
+                                       Margin="0,0,6,0"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding Title}"
+                                       FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                       TextTrimming="CharacterEllipsis"/>
+                          </Grid>
+                          <TextBlock Text="{Binding Description}"
+                                     IsVisible="{Binding Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                     FontSize="10"
+                                     Foreground="{StaticResource TextSecondaryBrush}"
+                                     TextWrapping="Wrap"
+                                     MaxLines="2"
+                                     TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="{Binding MetaLine}"
+                                     IsVisible="{Binding MetaLine, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                     FontSize="9"
+                                     Foreground="{StaticResource TextTertiaryBrush}"
+                                     FontFamily="Menlo, Consolas, monospace"/>
+                        </StackPanel>
                       </Border>
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
