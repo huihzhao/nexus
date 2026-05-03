@@ -35,6 +35,46 @@ from urllib.parse import quote
 
 logger = logging.getLogger("nexus_core.greenfield")
 
+
+# ── Script discovery (find .cjs / .mjs helpers) ──────────────────────
+#
+# The Greenfield bridge shells out to Node helpers under
+# packages/sdk/scripts/. They live there in the source tree but the
+# Python wheel only ships nexus_core/, so once nexus_core is installed
+# into site-packages those scripts no longer sit at
+# `Path(__file__).parent / ".." / "scripts"` — that resolves to
+# /opt/venv/lib/python3.11/site-packages/scripts/, which is empty.
+#
+# We try, in order:
+#   1. NEXUS_SCRIPTS_DIR env var       — explicit operator override (Docker)
+#   2. <__file__>/../scripts/          — works in editable / dev installs
+#   3. <cwd>/scripts/                  — works when invoked from repo root
+#   4. <cwd>/packages/sdk/scripts/     — works when invoked from monorepo root
+#                                        (this is the Docker case: WORKDIR=/app,
+#                                        repo COPYed in at /app/packages/sdk/...)
+#
+# First matching candidate wins. Returning None means "no Greenfield
+# helper available" and the caller falls back to local mode.
+#
+# Multiple filenames can be passed (e.g. .cjs preferred over .mjs); they
+# are tried in order against the same set of directories.
+def _find_script(*filenames: str) -> Optional[str]:
+    candidate_dirs: list[str] = []
+    env_dir = os.getenv("NEXUS_SCRIPTS_DIR")
+    if env_dir:
+        candidate_dirs.append(env_dir)
+    candidate_dirs.append(os.path.join(os.path.dirname(__file__), "..", "scripts"))
+    candidate_dirs.append(os.path.join(os.getcwd(), "scripts"))
+    candidate_dirs.append(os.path.join(os.getcwd(), "packages", "sdk", "scripts"))
+
+    for fname in filenames:
+        for d in candidate_dirs:
+            candidate = os.path.abspath(os.path.join(d, fname))
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
 # ── Network Presets ──────────────────────────────────────────────────
 
 GREENFIELD_NETWORKS = {
@@ -401,17 +441,10 @@ class GreenfieldClient:
         import os
 
         # Find the script (prefer .cjs for Node v22+ compatibility)
-        script_candidates = [
-            os.path.join(os.path.dirname(__file__), "..", "scripts", "create_greenfield_bucket.cjs"),
-            os.path.join(os.getcwd(), "scripts", "create_greenfield_bucket.cjs"),
-            os.path.join(os.path.dirname(__file__), "..", "scripts", "create_greenfield_bucket.mjs"),
-            os.path.join(os.getcwd(), "scripts", "create_greenfield_bucket.mjs"),
-        ]
-        script_path = None
-        for candidate in script_candidates:
-            if os.path.exists(candidate):
-                script_path = os.path.abspath(candidate)
-                break
+        script_path = _find_script(
+            "create_greenfield_bucket.cjs",
+            "create_greenfield_bucket.mjs",
+        )
 
         if not script_path:
             logger.error(
@@ -562,15 +595,7 @@ class GreenfieldClient:
 
     def _find_ops_script(self) -> Optional[str]:
         """Find the greenfield_ops.cjs helper script."""
-        import os
-        candidates = [
-            os.path.join(os.path.dirname(__file__), "..", "scripts", "greenfield_ops.cjs"),
-            os.path.join(os.getcwd(), "scripts", "greenfield_ops.cjs"),
-        ]
-        for c in candidates:
-            if os.path.exists(c):
-                return os.path.abspath(c)
-        return None
+        return _find_script("greenfield_ops.cjs")
 
     # ── Persistent daemon (module-level singleton) ──
     _daemon_proc = None      # subprocess.Popen
@@ -584,14 +609,7 @@ class GreenfieldClient:
 
     def _find_daemon_script(self) -> Optional[str]:
         """Find the greenfield_daemon.cjs script."""
-        candidates = [
-            os.path.join(os.path.dirname(__file__), "..", "scripts", "greenfield_daemon.cjs"),
-            os.path.join(os.getcwd(), "scripts", "greenfield_daemon.cjs"),
-        ]
-        for c in candidates:
-            if os.path.exists(c):
-                return os.path.abspath(c)
-        return None
+        return _find_script("greenfield_daemon.cjs")
 
     def _ensure_daemon(self) -> bool:
         """Start the persistent Node.js daemon if not running.

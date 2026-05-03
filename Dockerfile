@@ -145,6 +145,16 @@ ENV PATH="/opt/venv/bin:$PATH" \
 COPY --from=builder --chown=nexus:nexus /build /app
 WORKDIR /app
 
+# Tell nexus_core where the Greenfield .cjs helpers live. The wheel
+# install puts nexus_core itself under /opt/venv/.../site-packages/, but
+# the helpers under packages/sdk/scripts/ aren't packaged in (separate
+# fix tracked in the SDK's pyproject.toml backlog). For now the COPY
+# above puts them at /app/packages/sdk/scripts/, and this env var lets
+# nexus_core.greenfield._find_script bypass its 4-path heuristic and
+# go straight there. Docker = explicit; editable installs on a dev box
+# can leave this unset and the heuristic handles them.
+ENV NEXUS_SCRIPTS_DIR=/app/packages/sdk/scripts
+
 # Persistent state lives under /data — this is the ONLY directory the
 # host needs to back up. Layout:
 #   /data/db/                — rune_server.db (SQLite)
