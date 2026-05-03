@@ -63,16 +63,23 @@ RUN /opt/venv/bin/pip install --no-cache-dir \
 # ── Stage 2: runtime (slim + Node + non-root user) ───────────────────
 FROM python:3.11-slim-bookworm AS runtime
 
-# Node 20 LTS for two purposes:
+# Node 22 LTS ("Jod" — LTS through April 2027). Three purposes:
 #   1. MCP server installs (agent calls `npx -y mcp-...` at runtime).
 #   2. The Greenfield bridge — nexus_core/greenfield.py shells out to
 #      packages/sdk/scripts/greenfield_daemon.cjs (and friends), which
 #      `require("@bnb-chain/greenfield-js-sdk")` + `ethers` + `long`.
-#      Without those packages installed, every per-agent bucket creation
-#      crashes with `Cannot find module '@bnb-chain/greenfield-js-sdk'`,
-#      and chain.py silently falls back to local storage. The desktop
-#      then shows "in sync" while no data ever leaves the VPS — exactly
-#      the bug we hit on agent #985 in production.
+#   3. The `manage_skill` tool's marketplace search/install path — it
+#      shells out to `npx -y @lobehub/market-cli ...`. That CLI's
+#      `package.json` declares `engines.node: ">=22.0.0"`, and on
+#      Node 20 its underlying `@lobehub/market-sdk` ESM imports of
+#      `jose` blow up with `ERR_MODULE_NOT_FOUND` because Node 20's
+#      ESM resolver doesn't honour the `exports` field shape `jose`
+#      uses. So Node 20 = manage_skill search ALWAYS errors out and
+#      the user can't install pdf/xlsx/etc. Skills hub just won't
+#      work without bumping Node, full stop.
+#
+# greenfield-js-sdk + ethers + long all support Node 22 cleanly, so
+# bumping has no downside on the chain side.
 #
 # curl + ca-certificates for the NodeSource bootstrap and any outbound
 # HTTPS the agent needs (BSC RPC, Greenfield, Gemini, Tavily).
@@ -81,7 +88,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         ca-certificates \
         gnupg \
- && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && apt-get purge -y --auto-remove gnupg \
  && rm -rf /var/lib/apt/lists/* \
