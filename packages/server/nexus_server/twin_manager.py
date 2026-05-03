@@ -569,6 +569,17 @@ _RE_GF_PUT_OK = _re.compile(
     r"\[WRITE\]\[Greenfield\] PUT (?P<path>\S+) "
     r"\((?P<bytes>\d+) bytes, hash=(?P<hash>[0-9a-fA-F]+)\)"
 )
+# Emitted by GreenfieldClient._put_greenfield when a write falls back to
+# local cache. Distinct from outright "failed" — data is still safe in
+# the local fallback dir, but it didn't make it onto Greenfield. We
+# record this as ``status="degraded"`` so the desktop's chain-events
+# stream can render it differently from both "ok" (green) and
+# "failed" (red) — it's the in-between case operators most need to see.
+_RE_GF_FALLBACK = _re.compile(
+    r"\[FALLBACK\]\[Greenfield\] PUT (?P<path>\S+) "
+    r"\((?P<bytes>\d+) bytes, hash=(?P<hash>[0-9a-fA-F]+)\) "
+    r"reason=(?P<reason>.+)"
+)
 _RE_GF_FAIL = _re.compile(r"Greenfield (?:put|get) failed: (?P<error>.+)")
 
 
@@ -705,6 +716,26 @@ class _ChainActivityLogHandler(logging.Handler):
                 return
 
         elif name == "nexus_core.greenfield":
+            # Try the FALLBACK pattern before the generic "put failed"
+            # — fallback messages are MORE specific (carry path + hash
+            # + reason) and we want the structured fields, not the
+            # blanket "Greenfield write failed".
+            m = _RE_GF_FALLBACK.search(msg)
+            if m and self._last_user:
+                _record_chain_event(
+                    self._last_user,
+                    kind="greenfield_put",
+                    status="degraded",
+                    summary=(
+                        f"Greenfield write fell back to local "
+                        f"({m.group('path')})"
+                    ),
+                    content_hash=m.group("hash"),
+                    object_path=m.group("path"),
+                    error=m.group("reason"),
+                )
+                return
+
             m = _RE_GF_FAIL.search(msg)
             if m and self._last_user:
                 _record_chain_event(

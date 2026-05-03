@@ -1324,6 +1324,29 @@
                                    VerticalAlignment="Center"/>
                       </StackPanel>
                     </Grid>
+                    <!-- Degraded-reason banner. Only renders when the
+                         server has reported a fallback within the last
+                         5 minutes; gives the operator the actual root
+                         cause (e.g. "Cannot find module …", "bucket
+                         nexus-agent-985 unavailable") instead of just
+                         the yellow dot. -->
+                    <Border IsVisible="{Binding FallbackActive}"
+                            Padding="8,6" CornerRadius="6"
+                            BorderBrush="{StaticResource WarningBrush}"
+                            BorderThickness="1"
+                            Margin="0,4,0,0">
+                      <StackPanel Spacing="2">
+                        <TextBlock Text="Greenfield writes degraded — local cache only"
+                                   FontSize="10" FontWeight="SemiBold"
+                                   Foreground="{StaticResource WarningBrush}"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding DegradedReason}"
+                                   FontSize="10"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   TextWrapping="Wrap"
+                                   IsVisible="{Binding DegradedReason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                      </StackPanel>
+                    </Border>
                   </StackPanel>
                 </Border>
 

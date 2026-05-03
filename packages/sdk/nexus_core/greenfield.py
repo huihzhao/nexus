@@ -36,6 +36,41 @@ from urllib.parse import quote
 logger = logging.getLogger("nexus_core.greenfield")
 
 
+# ── Fallback signal ──────────────────────────────────────────────────
+#
+# Raised by `GreenfieldClient.put()` (chain mode) when the underlying
+# Greenfield write failed but the bytes were successfully cached in the
+# local fallback dir. The data is recoverable (a subsequent `get()` will
+# read from local cache), but it has NOT made it onto chain — so callers
+# that care about durability or chain-anchored state need to know.
+#
+# Why an exception instead of a status return: the chain backend's
+# write-behind path used to treat any non-exception return from put() as
+# "this write is durable, drop the WAL entry". That was the actual bug
+# behind the "everything looks synced but no buckets exist" production
+# incident — fallback was indistinguishable from success at the call
+# site. An exception flips that default: silence is success, and any
+# caller that wants to opt out of strict mode catches the specific
+# class.
+#
+# Carries enough context (path, content_hash, reason) for the chain
+# backend to record a meaningful failure event without re-deriving any
+# of it.
+class GreenfieldFallbackError(RuntimeError):
+    """Raised when a Greenfield put fell back to local cache.
+
+    Distinct from ``RuntimeError`` so callers can decide whether the
+    local-only outcome is acceptable. Data is safe; chain visibility
+    is not.
+    """
+
+    def __init__(self, reason: str, path: str, content_hash: str):
+        super().__init__(f"Greenfield write fell back to local: {reason}")
+        self.reason = reason
+        self.path = path
+        self.content_hash = content_hash
+
+
 # ── Script discovery (find .cjs / .mjs helpers) ──────────────────────
 #
 # The Greenfield bridge shells out to Node helpers under
@@ -917,37 +952,43 @@ class GreenfieldClient:
 
         # Lazily ensure bucket exists. If creation fails, fall back to
         # local storage rather than spamming "No such bucket" forever.
+        path_for_log = object_path or canonical
+
         if not await self._ensure_bucket_once():
-            logger.warning(
-                "Greenfield bucket %s unavailable — falling back to local for %s",
-                self._bucket_name, object_path or canonical,
-            )
+            reason = f"bucket {self._bucket_name} unavailable"
             self._ensure_local_fallback()
-            return self._put_local(data, chash, object_path=object_path)
+            local_chash = self._put_local(data, chash, object_path=object_path)
+            # Structured fallback log: twin_manager's _RE_GF_FALLBACK
+            # picks this up to record a `degraded` chain event row.
+            # Same shape as [WRITE][Greenfield] PUT so a single regex
+            # family handles both.
+            logger.warning(
+                "[FALLBACK][Greenfield] PUT %s (%d bytes, hash=%s) reason=%s",
+                path_for_log, len(data), local_chash[:16], reason,
+            )
+            raise GreenfieldFallbackError(
+                reason=reason, path=path_for_log, content_hash=local_chash,
+            )
 
         # Run blocking JS subprocess in a thread to keep event loop free
         result = await asyncio.to_thread(self._run_js_op, "put", canonical, data.hex())
         if not result.get("ok"):
             error = result.get("error", "unknown")
-            # Distinguish "Greenfield is slow / unavailable" (transient,
-            # we have a local fallback) from "fallback also blew up"
-            # (genuinely critical). The vast majority of timeouts are
-            # the SP being briefly slow under load; logging them at
-            # WARNING with "failed" wording is misleading because the
-            # operation is about to succeed via local fallback.
-            level = (
-                logging.INFO
-                if "Timeout" in error or "ECONNABORTED" in error
-                else logging.WARNING
-            )
-            logger.log(
-                level,
-                "Greenfield put slow/unavailable, using local fallback "
-                "(path=%s, %d bytes): %s",
-                object_path or canonical, len(data), error,
-            )
+            # Don't log a WARNING + then raise on the SAME line — the
+            # chain backend's exception handler already produces a
+            # WARNING via _record_write_failure. Keep this log line
+            # at INFO and structured (the [FALLBACK][Greenfield] tag
+            # is what twin_manager regex-matches into a degraded
+            # event row).
             self._ensure_local_fallback()
-            return self._put_local(data, chash, object_path=object_path)
+            local_chash = self._put_local(data, chash, object_path=object_path)
+            logger.warning(
+                "[FALLBACK][Greenfield] PUT %s (%d bytes, hash=%s) reason=%s",
+                path_for_log, len(data), local_chash[:16], error,
+            )
+            raise GreenfieldFallbackError(
+                reason=error, path=path_for_log, content_hash=local_chash,
+            )
 
         # Also store at structured path (for DCellar browsing)
         if object_path and object_path != canonical:

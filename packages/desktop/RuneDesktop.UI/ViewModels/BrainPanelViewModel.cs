@@ -247,6 +247,14 @@ public partial class ChainHealthViewModel : ObservableObject
     [ObservableProperty] private bool _daemonAlive = true;
     [ObservableProperty] private bool _greenfieldReady;
     [ObservableProperty] private bool _bscReady;
+    // Surfaced after the agent #985 silent-fallback incident. The
+    // server's greenfield_ready already flips false on fallback (so
+    // OverallStatus reaches "degraded" automatically), but operators
+    // also need the *reason* — without it the UI says "degraded" and
+    // they have no path to a fix without SSH-ing in.
+    [ObservableProperty] private bool _fallbackActive;
+    [ObservableProperty] private string? _lastWriteErrorMessage;
+    [ObservableProperty] private string? _lastWriteErrorPath;
 
     public string OverallStatus
     {
@@ -259,12 +267,44 @@ public partial class ChainHealthViewModel : ObservableObject
         }
     }
 
-    public string QueueLabel => WalQueueSize switch
+    public string QueueLabel
     {
-        0 => "all writes synced",
-        1 => "1 write pending",
-        _ => $"{WalQueueSize} writes pending",
-    };
+        get
+        {
+            // When fallback is active, the WAL count alone is misleading:
+            // 0 reads as "all writes synced" but they're really sitting
+            // in the local cache, NOT on Greenfield. Show the truth.
+            if (FallbackActive)
+            {
+                return WalQueueSize == 0
+                    ? "writes degraded — local-only"
+                    : $"{WalQueueSize} writes pending — local-only";
+            }
+            return WalQueueSize switch
+            {
+                0 => "all writes synced",
+                1 => "1 write pending",
+                _ => $"{WalQueueSize} writes pending",
+            };
+        }
+    }
+
+    /// <summary>
+    /// Human-friendly summary of the most recent write failure for the
+    /// detail tooltip / banner. Empty when there's no recorded failure.
+    /// Format: "<path> — <reason>" or just the reason if path missing.
+    /// </summary>
+    public string DegradedReason
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(LastWriteErrorMessage))
+                return "";
+            if (!string.IsNullOrEmpty(LastWriteErrorPath))
+                return $"{LastWriteErrorPath} — {LastWriteErrorMessage}";
+            return LastWriteErrorMessage;
+        }
+    }
 
     public void Apply(ChainHealthCard h)
     {
@@ -272,8 +312,30 @@ public partial class ChainHealthViewModel : ObservableObject
         DaemonAlive = h.DaemonAlive;
         GreenfieldReady = h.GreenfieldReady;
         BscReady = h.BscReady;
+        FallbackActive = h.FallbackActive;
+
+        // last_write_error is shaped {path, content_hash, error, at}
+        // on the wire — pull the pieces we want for display. Be lenient
+        // about missing keys so an older server build still renders.
+        LastWriteErrorMessage = null;
+        LastWriteErrorPath = null;
+        if (h.LastWriteError is { } lwe)
+        {
+            if (lwe.TryGetValue("error", out var errEl)
+                && errEl.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                LastWriteErrorMessage = errEl.GetString();
+            }
+            if (lwe.TryGetValue("path", out var pathEl)
+                && pathEl.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                LastWriteErrorPath = pathEl.GetString();
+            }
+        }
+
         OnPropertyChanged(nameof(OverallStatus));
         OnPropertyChanged(nameof(QueueLabel));
+        OnPropertyChanged(nameof(DegradedReason));
     }
 }
 

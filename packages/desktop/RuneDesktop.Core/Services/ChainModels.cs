@@ -561,6 +561,24 @@ public record ChainHealthCard
 
     [JsonPropertyName("bsc_ready")]
     public bool BscReady { get; init; }
+
+    // Newer fields surfaced after the agent #985 incident, when the
+    // server reported solid green while every Greenfield write was
+    // silently falling back to local cache. The server now flips
+    // `greenfield_ready` to false on fallback (so the existing
+    // OverallStatus → "degraded" branch already kicks in), but these
+    // two extras let the UI explain WHY: a tooltip or detail strip
+    // can read `LastWriteError` to surface the actual cause
+    // (`Cannot find module …`, `bucket nexus-agent-N unavailable`,
+    // etc.) instead of forcing the user into the server logs.
+    //
+    // Both nullable / default-false so older server builds (which
+    // don't emit these keys) still deserialize cleanly.
+    [JsonPropertyName("fallback_active")]
+    public bool FallbackActive { get; init; }
+
+    [JsonPropertyName("last_write_error")]
+    public Dictionary<string, System.Text.Json.JsonElement>? LastWriteError { get; init; }
 }
 
 public record ChainStatusResponse

@@ -259,6 +259,30 @@ class ChainBackend(StorageBackend):
         except Exception:
             return 0
 
+    # How long a fallback-active marker stays "fresh" before it stops
+    # influencing the health snapshot. Five minutes is a balance
+    # between (a) too short → degraded indicator flickers green even
+    # while every write is still falling back, (b) too long → an
+    # already-resolved transient blip keeps the dot yellow long after
+    # writes are landing again. A successful write clears the marker
+    # immediately, so this is really just "how long without ANY write
+    # activity before we forget about a prior fallback".
+    _GREENFIELD_FALLBACK_STALE_AFTER = 300.0
+
+    def _greenfield_fallback_active(self) -> bool:
+        """True iff there's been a Greenfield→local fallback inside
+        the last :data:`_GREENFIELD_FALLBACK_STALE_AFTER` seconds.
+
+        The desktop's Chain Health card consumes this via the
+        ``greenfield_ready`` field of :meth:`chain_health_snapshot` —
+        when this returns True the dot turns yellow + the
+        ``OverallStatus`` flips to "degraded".
+        """
+        last = getattr(self, "_last_greenfield_fallback_at", None)
+        if last is None:
+            return False
+        return (time.time() - last) < self._GREENFIELD_FALLBACK_STALE_AFTER
+
     def chain_health_snapshot(self) -> dict:
         """Compact summary for the Brain panel's Chain Health card.
 
@@ -270,14 +294,33 @@ class ChainBackend(StorageBackend):
               "last_daemon_ok": 1700000123.4,
               "greenfield_ready": True,
               "bsc_ready": True,
+              "fallback_active": False,
+              "last_write_error": None | {path, error, at, ...},
             }
+
+        ``greenfield_ready`` is True iff (a) a GreenfieldClient was
+        constructed AND (b) we haven't recently fallen back to local.
+        Without the second clause this field stayed True forever during
+        the production incident where every write silently became a
+        local-cache write — the desktop's "all writes synced" card was
+        flat-out lying. Now a single fallback within the last 5 minutes
+        flips this to False; a successful real Greenfield write clears
+        the marker immediately.
         """
+        fallback_active = self._greenfield_fallback_active()
         return {
             "wal_queue_size": self.wal_queue_size(),
             "daemon_alive": getattr(self, "_daemon_alive", True),
             "last_daemon_ok": getattr(self, "_last_daemon_ok", None),
-            "greenfield_ready": self._greenfield is not None,
+            "greenfield_ready": (
+                self._greenfield is not None and not fallback_active
+            ),
             "bsc_ready": self._chain_client is not None,
+            # New fields (additive — older clients ignore unknown keys
+            # in the JSON deserialisation path, so this is safe to
+            # ship without a coordinated desktop release).
+            "fallback_active": fallback_active,
+            "last_write_error": self._last_write_error,
         }
 
     # ── Background task management ─────────────────────────────────
@@ -640,6 +683,12 @@ class ChainBackend(StorageBackend):
             logger.warning("WAL append failed for %s — write is NOT crash-safe", path)
 
         async def _do_put():
+            # Local import: nexus_core.greenfield is a sibling module
+            # and a top-level import would create a cycle on packages
+            # that import chain.py first. Cheap (already loaded once
+            # the GreenfieldClient was constructed).
+            from nexus_core.greenfield import GreenfieldFallbackError
+
             t0 = time.time()
             try:
                 await self._greenfield.put(data, object_path=path)
@@ -659,6 +708,36 @@ class ChainBackend(StorageBackend):
                 # Watchdog — record successful daemon round-trip.
                 self._last_daemon_ok = time.time()
                 self._daemon_alive = True
+                # Successful chain write clears any prior fallback
+                # marker, so the health card returns to green once
+                # writes start landing again. (The marker auto-stales
+                # at 5 minutes, but this gives an immediate recovery
+                # signal — important for the desktop's polling card.)
+                self._last_greenfield_fallback_at = None
+            except GreenfieldFallbackError as e:
+                # Data is durable in local cache, but did NOT make it
+                # onto Greenfield. Three things to do:
+                #   1. Record the failure so the desktop's sync_status
+                #      surfaces a reason instead of silent green.
+                #   2. Mark the backend as fallback-active so
+                #      `chain_health_snapshot` flips greenfield_ready
+                #      to False — this is what turns the desktop's
+                #      Chain Health dot from green to yellow.
+                #   3. KEEP the WAL entry. The next process restart's
+                #      replay_wal() will re-fire this write, by which
+                #      time the underlying Greenfield issue (missing
+                #      bucket, daemon dead, SP rejected) may be fixed.
+                # We deliberately DO NOT re-raise — the data is safe,
+                # and re-raising would propagate via fire-and-forget's
+                # wrapper as a generic "task failed" log line that's
+                # actively confusing ("did the write succeed or not?").
+                self._record_write_failure(path, content_hash, f"fallback: {e.reason}")
+                self._last_greenfield_fallback_at = time.time()
+                self._daemon_alive = True  # Daemon process is still alive — only the chain write fell through.
+                logger.debug(
+                    "Greenfield fallback handled: path=%s reason=%s — WAL entry retained for replay",
+                    path, e.reason,
+                )
             except Exception as e:
                 self._record_write_failure(path, content_hash, str(e))
                 # Re-raise so _fire_and_forget's wrapper still logs

@@ -748,6 +748,18 @@ class ChainHealthCard(BaseModel):
     last_daemon_ok: Optional[float] = None
     greenfield_ready: bool = False
     bsc_ready: bool = False
+    # Fallback-aware fields, added after the agent #985 incident where
+    # every Greenfield write silently fell back to local cache and the
+    # desktop card stayed solid green. ``fallback_active`` is True iff
+    # a Greenfield→local fallback happened in the last ~5 min;
+    # ``last_write_error`` carries the human-readable reason so the
+    # desktop tooltip can show "Cannot find module …" etc. directly
+    # instead of forcing the operator into the server logs.
+    #
+    # Both default to None / False so older server builds that don't
+    # populate them still produce valid responses.
+    fallback_active: bool = False
+    last_write_error: Optional[dict] = None
 
 
 class ChainStatusResponse(BaseModel):
