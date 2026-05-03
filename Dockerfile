@@ -63,9 +63,19 @@ RUN /opt/venv/bin/pip install --no-cache-dir \
 # ── Stage 2: runtime (slim + Node + non-root user) ───────────────────
 FROM python:3.11-slim-bookworm AS runtime
 
-# Node 20 LTS for MCP server installs (agent calls `npx -y mcp-...` at
-# runtime). curl + ca-certificates for the NodeSource bootstrap and any
-# outbound HTTPS the agent needs (BSC RPC, Greenfield, Gemini, Tavily).
+# Node 20 LTS for two purposes:
+#   1. MCP server installs (agent calls `npx -y mcp-...` at runtime).
+#   2. The Greenfield bridge — nexus_core/greenfield.py shells out to
+#      packages/sdk/scripts/greenfield_daemon.cjs (and friends), which
+#      `require("@bnb-chain/greenfield-js-sdk")` + `ethers` + `long`.
+#      Without those packages installed, every per-agent bucket creation
+#      crashes with `Cannot find module '@bnb-chain/greenfield-js-sdk'`,
+#      and chain.py silently falls back to local storage. The desktop
+#      then shows "in sync" while no data ever leaves the VPS — exactly
+#      the bug we hit on agent #985 in production.
+#
+# curl + ca-certificates for the NodeSource bootstrap and any outbound
+# HTTPS the agent needs (BSC RPC, Greenfield, Gemini, Tavily).
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
@@ -77,6 +87,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/* \
  && node --version && npm --version
 
+# Greenfield JS bridge deps. `npm install -g` puts them in
+# /usr/lib/node_modules, and we set NODE_PATH (further down) so Node's
+# module resolver consults the global prefix when running standalone
+# .cjs scripts from anywhere on disk. Without NODE_PATH, the global
+# install lands in the right directory but `require()` still can't
+# find them — that footgun has bitten enough projects that it's worth
+# the explicit comment.
+#
+# Pinning versions because greenfield-js-sdk's API has shifted across
+# minor releases and the daemon's payload-shape probing doesn't cover
+# every permutation. Bump these together with a daemon test run.
+# NODE_PATH must be set BEFORE the validation runs in the same RUN
+# below, otherwise `require.resolve()` only searches the cwd's
+# node_modules tree and ignores the global prefix. ENV here makes it
+# available to every subsequent layer's shell, including the validation
+# below — and to the daemon's `node script.cjs` invocations at runtime.
+ENV NODE_PATH=/usr/lib/node_modules
+
+# Greenfield JS bridge deps. `npm install -g` puts them in NODE_PATH
+# above (/usr/lib/node_modules on Debian/Ubuntu Node images). The .cjs
+# scripts under /app/packages/sdk/scripts/ have no co-located
+# node_modules, so without NODE_PATH `require()` would fail.
+#
+# Pinning versions because greenfield-js-sdk's API has shifted across
+# minor releases and the daemon's payload-shape probing doesn't cover
+# every permutation. Bump these together with a daemon test run.
+#
+# The three trailing `node -e require.resolve(...)` calls are a
+# build-time gate — if any package didn't actually install, the build
+# fails here instead of silently shipping a broken image (which is how
+# the original "everything looks synced but no buckets exist" bug got
+# to production).
+RUN npm install -g --omit=dev \
+        @bnb-chain/greenfield-js-sdk@1.2.4 \
+        ethers@6.13.2 \
+        long@5.2.3 \
+ && npm cache clean --force \
+ && node -e "console.log('greenfield-js-sdk:', require.resolve('@bnb-chain/greenfield-js-sdk'))" \
+ && node -e "console.log('ethers:',           require.resolve('ethers'))" \
+ && node -e "console.log('long:',             require.resolve('long'))"
+
 # Non-root user — important for the volume mounts below: skills /
 # uploads / db get written under /data with this UID, so a host-side
 # `chown -R 1000:1000 /var/lib/nexus` is sufficient.
@@ -86,6 +137,9 @@ RUN useradd --create-home --uid 1000 --shell /bin/bash nexus
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
+# NODE_PATH is set higher up (next to the npm install) so the build-time
+# `require.resolve` checks pass. It's already in the image env at this
+# point; no need to redeclare here.
 
 # App code (already inside the venv as editable installs).
 COPY --from=builder --chown=nexus:nexus /build /app
